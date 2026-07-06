@@ -1,0 +1,6 @@
+{
+  "name": "Foxit Signature Field Creator",
+  "description": "A web application that replicates Foxit PhantomPDF's signature field creation tool. It features a standalone single HTML export capability.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -337,20 +337,92 @@ export default function App() {
           const page = pdfPages[f.pageIndex];
           const { width, height } = page.getSize();
           
+          let angle = 0;
+          try {
+            const rot = page.getRotation();
+            if (rot && typeof rot.angle === 'number') {
+              angle = rot.angle;
+            } else if (typeof rot === 'number') {
+              angle = rot;
+            }
+          } catch (e) {
+            console.error("Error getting page rotation", e);
+          }
+          angle = (angle % 360 + 360) % 360;
+
+          let visibleWidth = width;
+          let visibleHeight = height;
+          let boxX = 0;
+          let boxY = 0;
+          try {
+            const cropBox = page.getCropBox();
+            if (cropBox) {
+              boxX = cropBox.x || 0;
+              boxY = cropBox.y || 0;
+              visibleWidth = cropBox.width;
+              visibleHeight = cropBox.height;
+            }
+          } catch (e) {
+            console.error("Error getting cropbox", e);
+          }
+
           const parsedPage = pages[f.pageIndex];
           const canvasWidth = parsedPage.width;
           const canvasHeight = parsedPage.height;
           
-          const scaleX = width / canvasWidth;
-          const scaleY = height / canvasHeight;
-          
-          const fieldX = f.x * scaleX;
-          const fieldWidth = f.width * scaleX;
-          const fieldHeight = f.height * scaleY;
-          const fieldY = height - (f.y * scaleY) - fieldHeight;
+          let fieldX = 0;
+          let fieldY = 0;
+          let fieldWidth = 0;
+          let fieldHeight = 0;
+
+          if (angle === 90) {
+            const scaleX = visibleHeight / canvasWidth;
+            const scaleY = visibleWidth / canvasHeight;
+            
+            fieldX = boxX + (f.y * scaleY);
+            fieldY = boxY + (f.x * scaleX);
+            fieldWidth = f.height * scaleY;
+            fieldHeight = f.width * scaleX;
+          } else if (angle === 180) {
+            const scaleX = visibleWidth / canvasWidth;
+            const scaleY = visibleHeight / canvasHeight;
+            
+            fieldX = boxX + (visibleWidth - (f.x + f.width) * scaleX);
+            fieldY = boxY + (f.y * scaleY);
+            fieldWidth = f.width * scaleX;
+            fieldHeight = f.height * scaleY;
+          } else if (angle === 270) {
+            const scaleX = visibleHeight / canvasWidth;
+            const scaleY = visibleWidth / canvasHeight;
+            
+            fieldX = boxX + (visibleWidth - (f.y + f.height) * scaleY);
+            fieldY = boxY + (visibleHeight - (f.x + f.width) * scaleX);
+            fieldWidth = f.height * scaleY;
+            fieldHeight = f.width * scaleX;
+          } else {
+            const scaleX = visibleWidth / canvasWidth;
+            const scaleY = visibleHeight / canvasHeight;
+            
+            fieldX = boxX + (f.x * scaleX);
+            fieldY = boxY + (visibleHeight - (f.y + f.height) * scaleY);
+            fieldWidth = f.width * scaleX;
+            fieldHeight = f.height * scaleY;
+          }
+
+          console.log("Calculated signature position:", {
+            angle,
+            visibleWidth,
+            visibleHeight,
+            boxX,
+            boxY,
+            canvasWidth,
+            canvasHeight,
+            input: { x: f.x, y: f.y, w: f.width, h: f.height },
+            output: { x: fieldX, y: fieldY, w: fieldWidth, h: fieldHeight }
+          });
           
           if (f.type === 'signature') {
-            const signatureDict = pdfDoc.context.obj({
+            const signatureFields: any = {
               Type: 'Annot',
               Subtype: 'Widget',
               FT: 'Sig',
@@ -358,7 +430,15 @@ export default function App() {
               T: pdfLib.PDFString.of(f.name),
               F: 4, 
               P: page.ref,
-            });
+            };
+
+            if (angle !== 0) {
+              signatureFields.MK = pdfDoc.context.obj({
+                R: angle
+              });
+            }
+
+            const signatureDict = pdfDoc.context.obj(signatureFields);
             const signatureRef = pdfDoc.context.register(signatureDict);
             page.node.addAnnot(signatureRef);
             form.acroForm.addField(signatureRef);
