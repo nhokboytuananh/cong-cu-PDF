@@ -2841,7 +2841,7 @@ export default function App() {
         const baselineX = t.x + (t.offsetX || 0);
         const baselineY = t.y + t.height + (t.offsetY || 0);
         const bottomOffset = pageHeight - baselineY;
-        const descenderShift = sizeToUse * 0.17;
+        const descenderShift = sizeToUse * 0.31;
         const bottomOffsetForBaseline = bottomOffset - descenderShift;
 
         // Trạng thái hiển thị chữ:
