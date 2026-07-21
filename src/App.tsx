@@ -4,7 +4,7 @@
  */
 import React, { useState, useRef, useEffect } from 'react';
 import { 
-  PenSquare, Layout, FileDown, X, MousePointer2, FileUp, Loader2, FilePlus, Trash2, Type, ArrowUp, ArrowDown, Edit, HelpCircle, Info, CheckCircle2, MousePointerClick
+  PenSquare, Layout, FileDown, X, MousePointer2, FileUp, Loader2, FilePlus, Trash2, Type, ArrowUp, ArrowDown, Edit, HelpCircle, Info, CheckCircle2, MousePointerClick, Bold, Italic, Settings2
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as pdfLib from 'pdf-lib';
@@ -94,14 +94,37 @@ const checkIsDigitallySigned = (uint8Array: Uint8Array): boolean => {
 };
 
 const getFontFamily = (fontName: string): string => {
-  const name = (fontName || '').toLowerCase();
-  if (name.includes('sans') || name.includes('arial') || name.includes('helvetica') || name.includes('calibri') || name.includes('roboto') || name.includes('inter')) {
-    return '"Arimo", "Roboto", sans-serif';
+  // Bỏ prefix subset kiểu "ABCDEF+" (ví dụ: "ABCDEF+Arial" → "Arial")
+  const cleaned = (fontName || '').replace(/^[A-Z]{6}\+/, '');
+  const name = cleaned.toLowerCase();
+
+  // Monospace / Courier
+  if (name.includes('courier') || name.includes('mono') || name.includes('consolas') ||
+      name.includes('inconsolata') || name.includes('sourcecodemono') || name.includes('firacode')) {
+    return '"Courier New", Courier, monospace';
   }
-  if (name.includes('courier') || name.includes('mono') || name.includes('consolas')) {
-    return 'Courier New, Courier, monospace';
+  // Sans-serif phổ biến -> ưu tiên dùng Arimo và Roboto đã được nạp từ Google Fonts
+  if (name.includes('helvetica') || name.includes('arial') || name.includes('calibri') ||
+      name.includes('sans') || name.includes('roboto') || name.includes('inter') ||
+      name.includes('opensans') || name.includes('nunito') || name.includes('lato') ||
+      name.includes('ubuntu') || name.includes('gill') || name.includes('futura') ||
+      name.includes('optima') || name.includes('tahoma') || name.includes('verdana') ||
+      name.includes('trebuchet') || name.includes('segoe')) {
+    return '"Arimo", "Roboto", "Arial", sans-serif';
   }
-  return '"Tinos", "Times New Roman", serif';
+  // Serif phổ biến -> ưu tiên dùng Tinos đã được nạp từ Google Fonts
+  if (name.includes('times') || name.includes('georgia') || name.includes('palatino') ||
+      name.includes('garamond') || name.includes('baskerville') || name.includes('cambria') ||
+      name.includes('book antiqua') || name.includes('century') || name.includes('minion') ||
+      name.includes('constantia') || name.includes('tinos') || name.includes('serif')) {
+    return '"Tinos", "Times New Roman", Times, serif';
+  }
+  // Font tiếng Việt phổ biến → sans-serif
+  if (name.includes('unicode') || name.includes('viet') || name.includes('arimo') || name.includes('noto')) {
+    return '"Arimo", "Arial", sans-serif';
+  }
+  // Mặc định: nếu không nhận ra thì dùng serif (Tinos)
+  return '"Tinos", "Times New Roman", Times, serif';
 };
 
 export default function App() {
@@ -850,7 +873,7 @@ export default function App() {
   };
 
   const handleSaveTextEdit = (id: string, newText: string) => {
-    setPdfTexts(pdfTexts.map(t => {
+    setPdfTexts(prev => prev.map(t => {
       if (t.id === id) {
         const isModified = newText !== t.originalText;
         return { ...t, text: newText, isModified };
@@ -858,6 +881,7 @@ export default function App() {
       return t;
     }));
     setEditingTextId(null);
+    // Giữ sidebar mở nếu đang hiển thị (không xóa selectedTextId)
   };
 
   const handleRestoreText = (id: string) => {
@@ -1033,7 +1057,7 @@ export default function App() {
         isBold: boolean,
         isItalic: boolean
       ): Promise<pdfLib.PDFFont> => {
-        // Ưu tiên 1: Font user đã upload
+        // Ưu tiên 1: Font do người dùng chủ động tải lên (.ttf/.otf)
         if (userUploadedFontBytes && userUploadedFontBytes.length > 0) {
           const userCacheKey = `user|${isBold}|${isItalic}`;
           if (embeddedOriginalFontCache.has(userCacheKey)) {
@@ -1044,29 +1068,12 @@ export default function App() {
             embeddedOriginalFontCache.set(userCacheKey, embedded);
             return embedded;
           } catch (e) {
-            console.warn('Không thể embed font user đã upload, thử font gốc PDF:', e);
+            console.warn('Không thể embed font user đã upload, dùng fallback chuẩn:', e);
           }
         }
 
-        // Ưu tiên 2: Font gốc trích xuất từ PDF
-        if (pdfFontName) {
-          const cacheKey = `${pdfFontName}|${isBold}|${isItalic}`;
-          if (embeddedOriginalFontCache.has(cacheKey)) {
-            return embeddedOriginalFontCache.get(cacheKey)!;
-          }
-          const fontBytes = extractedFontCache.get(pdfFontName);
-          if (fontBytes && fontBytes.length > 0) {
-            try {
-              const embedded = await pdfDoc.embedFont(fontBytes);
-              embeddedOriginalFontCache.set(cacheKey, embedded);
-              return embedded;
-            } catch (e) {
-              console.warn(`Không thể embed font gốc '${pdfFontName}', dùng fallback:`, e);
-            }
-          }
-        }
-
-        // Ưu tiên 3: Fallback về Tinos/Roboto
+        // Ưu tiên 2: Sử dụng các bộ font TrueType Việt hóa chất lượng cao (Arimo cho sans-serif, Tinos cho serif)
+        // để tránh lỗi font gốc của PDF bị subset thiếu ký tự tiếng Việt gõ mới.
         if (isSerif) {
           if (isBold) return embeddedSerifBold;
           if (isItalic) return embeddedSerifItalic;
@@ -1345,24 +1352,27 @@ export default function App() {
 
         {/* Sidebar Content */}
         <div className="p-4 flex flex-col gap-5 text-xs text-gray-700 flex-1">
-          {/* Edit Text Field */}
-          <div className="flex flex-col gap-1.5">
-            <span className="font-bold text-gray-800 flex items-center gap-1">✏️ Nội dung chữ:</span>
-            <textarea 
-              rows={3}
-              value={item.text}
-              onChange={(e) => handleTextPropChange(item.id, { text: e.target.value, isModified: true })}
-              className="w-full border border-gray-300 rounded px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 font-medium resize-none bg-gray-50/50 text-gray-800 text-sm"
-              placeholder="Nhập nội dung chỉnh sửa..."
-            />
+          {/* Info: chỉnh sửa trực tiếp */}
+          <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 flex items-start gap-2">
+            <span className="text-blue-500 text-base mt-0.5">✏️</span>
+            <div>
+              <p className="text-[11px] text-blue-800 font-semibold leading-snug">Chỉnh sửa trực tiếp</p>
+              <p className="text-[10px] text-blue-600 leading-snug mt-0.5">Nhấp thẳng vào chữ trên trang để gõ chỉnh sửa. Font tự động nhận dạng từ PDF.</p>
+              <button
+                onClick={() => setEditingTextId(item.id)}
+                className="mt-1.5 text-[10px] bg-blue-600 text-white px-2.5 py-1 rounded font-semibold hover:bg-blue-700 transition-colors cursor-pointer"
+              >
+                📝 Mở chỉnh sửa ngay
+              </button>
+            </div>
           </div>
 
-          {/* Font Family Selection */}
+          {/* Font / Phông chữ khi xuất */}
           <div className="flex flex-col gap-1.5">
             <span className="font-bold text-gray-800 flex items-center gap-1">🔤 Phông chữ khi xuất:</span>
 
-            {/* User uploaded font takes priority */}
             {userUploadedFontBytes ? (
+              /* Font user đã upload */
               <div className="flex items-center gap-2 bg-green-50 border border-green-300 rounded px-2 py-1.5">
                 <span className="text-green-700 text-[10px] font-semibold flex-1 truncate">
                   ✅ Font tùy chỉnh: <span className="font-mono">{userUploadedFontName}</span>
@@ -1374,64 +1384,70 @@ export default function App() {
                 >✕</button>
               </div>
             ) : (
-              <>
-                <div className="grid grid-cols-2 gap-2">
-                  <button 
-                    onClick={() => handleTextPropChange(item.id, { customFontFamily: 'sans-serif', isModified: true })}
-                    className={`py-2 px-3 border rounded font-semibold text-center transition-all cursor-pointer text-[11px] ${
-                      (item.customFontFamily || 'sans-serif') === 'sans-serif'
-                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700 shadow-sm font-bold'
+              /* Font tự nhận dạng + tùy chọn override */
+              <div className="bg-gray-50 border border-gray-200 rounded px-2 py-1.5 text-[10px]">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-gray-500">Font nhận dạng:</span>
+                  <span className="font-mono text-indigo-700 font-semibold truncate max-w-[120px]">
+                    {(item.fontName || '').replace(/^[A-Z]{6}\+/, '') || '(không rõ)'}
+                  </span>
+                </div>
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={() => handleTextPropChange(item.id, { customFontFamily: undefined, isModified: true })}
+                    className={`flex-1 py-1 border rounded text-center transition-all cursor-pointer text-[10px] ${
+                      !item.customFontFamily
+                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700 font-bold'
                         : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
                     }`}
                   >
-                    Không chân (Arimo)
+                    Tự động
                   </button>
-                  <button 
-                    onClick={() => handleTextPropChange(item.id, { customFontFamily: 'serif', isModified: true })}
-                    className={`py-2 px-3 border rounded font-semibold text-center transition-all cursor-pointer text-[11px] ${
-                      item.customFontFamily === 'serif'
-                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700 shadow-sm font-bold'
+                  <button
+                    onClick={() => handleTextPropChange(item.id, { customFontFamily: 'sans-serif', isModified: true })}
+                    className={`flex-1 py-1 border rounded text-center transition-all cursor-pointer text-[10px] ${
+                      item.customFontFamily === 'sans-serif'
+                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700 font-bold'
                         : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
                     }`}
                   >
-                    Có chân (Tinos)
+                    Không chân
+                  </button>
+                  <button
+                    onClick={() => handleTextPropChange(item.id, { customFontFamily: 'serif', isModified: true })}
+                    className={`flex-1 py-1 border rounded text-center transition-all cursor-pointer text-[10px] ${
+                      item.customFontFamily === 'serif'
+                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700 font-bold'
+                        : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    Có chân
                   </button>
                 </div>
-                <p className="text-[10px] text-gray-400 italic leading-snug">
-                  * Tinos tương đồng Times New Roman, Arimo tương đồng Arial.
-                </p>
-              </>
+              </div>
             )}
 
-            {/* Upload font file */}
-            <div className="border-t border-dashed border-gray-200 pt-2 mt-1">
-              <p className="text-[10px] text-gray-500 mb-1.5 leading-snug">
-                📎 Để giữ đúng font gốc, tải lên file <strong>.ttf</strong> / <strong>.otf</strong> tương ứng:
-              </p>
-              <label className="flex items-center gap-2 cursor-pointer bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded px-3 py-2 transition-colors">
-                <span className="text-[11px] text-indigo-700 font-semibold">⬆ Tải lên font file (.ttf/.otf)</span>
-                <input
-                  type="file"
-                  accept=".ttf,.otf,.woff,.woff2"
-                  className="hidden"
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    try {
-                      const buf = await file.arrayBuffer();
-                      setUserUploadedFontBytes(new Uint8Array(buf));
-                      setUserUploadedFontName(file.name);
-                    } catch(err) {
-                      alert('Không thể đọc file font.');
-                    }
-                    e.target.value = '';
-                  }}
-                />
-              </label>
-              <p className="text-[10px] text-gray-400 italic mt-1 leading-snug">
-                Font info gốc: <span className="font-mono text-gray-500">{item.fontName || 'Không rõ'}</span>
-              </p>
-            </div>
+            {/* Upload font file (gọn lại) */}
+            <label className="flex items-center gap-1.5 cursor-pointer text-[10px] text-indigo-600 hover:text-indigo-800 transition-colors mt-0.5">
+              <span>⬆ Tải font file (.ttf/.otf) để xuất đúng font</span>
+              <input
+                type="file"
+                accept=".ttf,.otf,.woff"
+                className="hidden"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  try {
+                    const buf = await file.arrayBuffer();
+                    setUserUploadedFontBytes(new Uint8Array(buf));
+                    setUserUploadedFontName(file.name);
+                  } catch(err) {
+                    alert('Không thể đọc file font.');
+                  }
+                  e.target.value = '';
+                }}
+              />
+            </label>
           </div>
 
           {/* Font Weight & Styles */}
@@ -2179,16 +2195,20 @@ export default function App() {
         
         {activeTool === 'Edit Text' && (
            <>
-             <div className="w-px h-16 bg-gray-300"></div>
-             <div className="flex flex-col justify-center h-[68px] border border-gray-300/60 rounded-lg px-3 bg-white/60 text-[11px] gap-1 shadow-inner relative overflow-hidden">
-               <label className="flex items-center gap-2 cursor-pointer select-none text-gray-700 font-semibold">
+             <div className="w-px h-16 bg-gray-300" />
+             <div className="flex flex-col justify-center h-[68px] border border-orange-300/80 rounded-lg px-3 bg-orange-50/60 text-[11px] gap-1.5 shadow-inner relative overflow-hidden min-w-[200px]">
+               <div className="flex items-center gap-1.5 font-semibold text-orange-700">
+                 <span className="w-2 h-2 rounded-full bg-orange-500 animate-pulse" />
+                 Chế độ sửa chữ gốc
+               </div>
+               <label className="flex items-center gap-1.5 cursor-pointer select-none text-gray-700">
                  <input 
                    type="checkbox" 
                    checked={showTextHighlights} 
                    onChange={(e) => setShowTextHighlights(e.target.checked)}
-                   className="w-3.5 h-3.5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                   className="w-3 h-3 text-orange-500 border-gray-300 rounded focus:ring-orange-400 cursor-pointer"
                  />
-                 <span>Hiện khung viền chữ</span>
+                 <span className="text-[10px]">Hiện khung viền chữ</span>
                </label>
                {fontsLoading && (
                  <div className="flex items-center gap-1 text-[10px] text-indigo-600 animate-pulse font-medium">
@@ -2198,7 +2218,7 @@ export default function App() {
                )}
                {fontsLoaded && (
                  <div className="text-[9px] text-green-600 font-semibold flex items-center gap-1">
-                   <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+                   <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
                    <span>✓ Đã nạp phông tiếng Việt</span>
                  </div>
                )}
@@ -2356,8 +2376,7 @@ export default function App() {
                    >
                       <img src={p.dataUrl} className="w-full h-full pointer-events-none" alt={`Trang ${i+1}`} />
                       {renderFields(i)}
-                      {activeTool === 'Edit Text' && renderOriginalTexts(i)}
-                      {renderModifiedTextsOverlay(i)}
+                      {renderPdfTexts(i)}
                       {renderDrawingBox(i)}
                    </div>
               </div>
@@ -2645,208 +2664,268 @@ export default function App() {
   }
 
   function renderDrawingBox(pageIndex: number) {
-     if (!drawing || drawing.pageIndex !== pageIndex) return null;
-     const isText = activeTool === 'Text Field';
-     const borderClass = isText ? 'border-blue-600 bg-blue-50' : 'border-indigo-600 bg-indigo-50';
-     const labelBg = isText ? 'bg-blue-600' : 'bg-indigo-600';
-     const label = isText ? 'Trường văn bản' : 'Trường chữ ký';
-     return (
-        <div 
-           className={`absolute border border-dashed bg-opacity-40 ${borderClass}`}
-           style={{ 
-               left: Math.min(drawing.startX, drawing.currentX), 
-               top: Math.min(drawing.startY, drawing.currentY), 
-               width: Math.abs(drawing.currentX - drawing.startX), 
-               height: Math.abs(drawing.currentY - drawing.startY) 
-           }}
-        >
-              {/* Tab Header Preview */}
-              <div className={`absolute top-0 left-0 ${labelBg} text-white text-[10px] px-1.5 py-0.5 whitespace-nowrap transform -translate-y-[calc(100%+1px)] -translate-x-[1px] leading-none rounded-t`}>
-                  {label}
-              </div>
+    if (!drawing || drawing.pageIndex !== pageIndex) return null;
+    const isText = activeTool === 'Text Field';
+    const borderClass = isText ? 'border-blue-600 bg-blue-50' : 'border-indigo-600 bg-indigo-50';
+    const labelBg = isText ? 'bg-blue-600' : 'bg-indigo-600';
+    const label = isText ? 'Trường văn bản' : 'Trường chữ ký';
+    return (
+      <div
+        className={`absolute border border-dashed bg-opacity-40 ${borderClass}`}
+        style={{
+          left: Math.min(drawing.startX, drawing.currentX),
+          top: Math.min(drawing.startY, drawing.currentY),
+          width: Math.abs(drawing.currentX - drawing.startX),
+          height: Math.abs(drawing.currentY - drawing.startY)
+        }}
+      >
+        <div className={`absolute top-0 left-0 ${labelBg} text-white text-[10px] px-1.5 py-0.5 whitespace-nowrap transform -translate-y-[calc(100%+1px)] -translate-x-[1px] leading-none rounded-t`}>
+          {label}
         </div>
-     );
+      </div>
+    );
   }
 
-  function handleSelectText(t: PdfTextItem) {
-    setSelectedTextId(t.id);
-    ensureFontsLoaded();
-    if (!t.isModified) {
-      setPdfTexts(prev => prev.map(item => {
-        if (item.id === t.id) {
-          return { ...item, isModified: true };
-        }
-        return item;
-      }));
-    }
+  /** Cập nhật thuộc tính của text item mà không đóng inline edit */
+  const handleUpdateText = (id: string, updates: Partial<PdfTextItem>) => {
+    setPdfTexts(prev => prev.map(t => t.id === id ? { ...t, ...updates, isModified: true } : t));
+  };
+
+  /** Floating format bar nổi ngay trên text đang edit, giống Foxit */
+  function renderFloatingFormatBar(t: PdfTextItem, baselineX: number, bottomOffsetForBaseline: number) {
+    const handlePropChange = (updates: Partial<PdfTextItem>) => handleUpdateText(t.id, updates);
+    const detectedFont = (t.fontName || '').replace(/^[A-Z]{6}\+/, '') || 'Auto';
+    const fontSize = Math.round(t.customFontSize || t.fontSize);
+    return (
+      <div
+        data-floating-bar="true"
+        className="absolute z-[60] flex items-center gap-0.5 bg-white border border-gray-300 shadow-xl rounded-lg px-2 py-1 select-none"
+        style={{
+          left: baselineX,
+          bottom: bottomOffsetForBaseline + (t.customFontSize || t.fontSize) * 1.5 + 8,
+          minWidth: 280,
+          whiteSpace: 'nowrap'
+        }}
+        onMouseDown={(e) => {
+          // Ngăn mất focus của contentEditable khi nhấp chuột vào các nút định dạng
+          e.preventDefault();
+        }}
+      >
+        {/* Tên phông chữ gốc */}
+        <span className="text-[10px] text-gray-500 font-mono truncate max-w-[90px] border border-gray-200 rounded px-1.5 py-0.5 bg-gray-50" title={`Font gốc: ${detectedFont}`}>
+          {detectedFont.slice(0, 14)}
+        </span>
+
+        {/* Cỡ chữ */}
+        <input
+          type="number"
+          min={4} max={150} step={1}
+          value={fontSize}
+          onChange={(e) => handlePropChange({ customFontSize: parseInt(e.target.value) || t.fontSize })}
+          className="w-10 text-center border border-gray-200 rounded text-[11px] py-0.5 outline-none focus:border-blue-400 bg-white font-mono"
+        />
+
+        <div className="w-px h-4 bg-gray-200 mx-0.5" />
+
+        {/* Bold */}
+        <button
+          tabIndex={-1}
+          onClick={() => handlePropChange({ isBold: !t.isBold })}
+          className={`p-1 rounded transition-colors ${
+            t.isBold ? 'bg-indigo-100 text-indigo-700 font-bold' : 'hover:bg-gray-100 text-gray-600'
+          }`}
+          title="In đậm (Bold)"
+        >
+          <Bold className="w-3.5 h-3.5 stroke-[3]" />
+        </button>
+
+        {/* Italic */}
+        <button
+          tabIndex={-1}
+          onClick={() => handlePropChange({ isItalic: !t.isItalic })}
+          className={`p-1 rounded transition-colors ${
+            t.isItalic ? 'bg-indigo-100 text-indigo-700 italic' : 'hover:bg-gray-100 text-gray-600'
+          }`}
+          title="In nghiêng (Italic)"
+        >
+          <Italic className="w-3.5 h-3.5" />
+        </button>
+
+        <div className="w-px h-4 bg-gray-200 mx-0.5" />
+
+        {/* Màu sắc */}
+        <label className="flex items-center gap-1 cursor-pointer" title="Màu chữ">
+          <div className="w-4 h-4 rounded-full border border-gray-300" style={{ backgroundColor: t.customColor || '#000000' }} />
+          <input
+            type="color"
+            value={t.customColor || '#000000'}
+            onChange={(e) => handlePropChange({ customColor: e.target.value })}
+            className="absolute opacity-0 w-0 h-0"
+          />
+        </label>
+
+        <div className="w-px h-4 bg-gray-200 mx-0.5" />
+
+        {/* Xóa đè nền */}
+        <button
+          tabIndex={-1}
+          onClick={() => handlePropChange({ hasBackground: t.hasBackground === false })}
+          className={`p-1 rounded text-[10px] font-semibold transition-colors ${
+            t.hasBackground !== false ? 'bg-indigo-100 text-indigo-700' : 'hover:bg-gray-100 text-gray-500'
+          }`}
+          title="Che vùng chữ cũ bên dưới"
+        >
+          Che nền
+        </button>
+
+        <div className="w-px h-4 bg-gray-200 mx-0.5" />
+
+        {/* Mở sidebar định dạng nâng cao */}
+        <button
+          tabIndex={-1}
+          onClick={() => setSelectedTextId(t.id)}
+          className="p-1 rounded hover:bg-gray-100 text-gray-600 flex items-center gap-1"
+          title="Định dạng nâng cao (căn lề, vị trí, góc xoay)..."
+        >
+          <Settings2 className="w-3.5 h-3.5" />
+          <span className="text-[10px]">Thêm</span>
+        </button>
+
+        {/* Đóng chỉnh sửa */}
+        <button
+          tabIndex={-1}
+          onClick={() => { setEditingTextId(null); setSelectedTextId(null); }}
+          className="ml-1 p-1 rounded hover:bg-red-50 text-gray-400 hover:text-red-500"
+          title="Đóng (Esc)"
+        >
+          <X className="w-3 h-3" />
+        </button>
+      </div>
+    );
   }
 
-  function renderOriginalTexts(pageIndex: number) {
+  /** Render tất cả văn bản PDF (cả chữ gốc và chữ đã sửa) trên một trang */
+  function renderPdfTexts(pageIndex: number) {
+    const isEditMode = activeTool === 'Edit Text';
+
     return pdfTexts
       .filter(t => t.pageIndex === pageIndex)
       .map(t => {
-        if (t.isModified) return null;
-
-        const borderStyleClass = showTextHighlights 
-          ? "border border-dashed border-indigo-400/40 hover:border-blue-500 hover:bg-blue-100/20" 
-          : "border border-dashed border-transparent hover:border-blue-500/30 hover:bg-blue-100/10";
-
-        return (
-          <div
-            key={t.id}
-            onClick={(e) => {
-              e.stopPropagation();
-              handleSelectText(t);
-            }}
-            onMouseDown={(e) => e.stopPropagation()}
-            className={`absolute cursor-text transition-all z-20 ${borderStyleClass}`}
-            style={{
-              left: t.x - 2,
-              top: t.y - 2,
-              width: t.width + 4,
-              height: t.height + 4,
-            }}
-            title="Nhấp để sửa văn bản này"
-          />
-        );
-      });
-  }
-
-  function renderModifiedTextsOverlay(pageIndex: number) {
-    return pdfTexts
-      .filter(t => t.pageIndex === pageIndex && t.isModified)
-      .map(t => {
-        const isSelected = selectedTextId === t.id;
         const isEditing = editingTextId === t.id;
+        const isModified = t.isModified;
+
+        // Nếu không ở chế độ sửa và chữ này chưa bị chỉnh sửa, không cần vẽ đè lên canvas
+        if (!isEditMode && !isModified) return null;
+
         const fontFamily = getFontFamily(t.customFontFamily || t.fontName);
-        const useBold = t.isBold;
-        const useItalic = t.isItalic;
-        const fontStyle = useItalic ? 'italic' : 'normal';
-        const fontWeight = useBold ? 'bold' : 'normal';
+        const fontStyle = t.isItalic ? 'italic' : 'normal';
+        const fontWeight = t.isBold ? 'bold' : 'normal';
         const customColor = t.customColor || '#000000';
         const hasBg = t.hasBackground !== false;
 
         const pageHeight = pages[pageIndex]?.height || 800;
         const sizeToUse = (t.customFontSize || t.fontSize) * 1.5;
 
-        // Calculate baseline position
+        // Vị trí chữ
         const baselineX = t.x + (t.offsetX || 0);
         const baselineY = t.y + t.height + (t.offsetY || 0);
         const bottomOffset = pageHeight - baselineY;
-
-        // Descender ratio correction to align CSS text baseline precisely with PDF baseline
         const descenderShift = sizeToUse * 0.17;
         const bottomOffsetForBaseline = bottomOffset - descenderShift;
 
-        if (isEditing) {
-          return (
-            <div
-              key={t.id}
-              className="absolute z-50 bg-white border border-blue-500 rounded shadow-md flex items-center p-0.5"
-              style={{
-                left: baselineX - 4,
-                bottom: bottomOffsetForBaseline - 4,
-                width: Math.max(t.width + 30, 120),
-                height: t.height + 8,
-                transform: `rotate(${t.rotation || 0}deg)`,
-                transformOrigin: 'left bottom',
-              }}
-              onMouseDown={(e) => e.stopPropagation()}
-            >
-              <input
-                type="text"
-                defaultValue={t.text}
-                autoFocus
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    const target = e.currentTarget as HTMLInputElement;
-                    handleSaveTextEdit(t.id, target.value);
-                  } else if (e.key === 'Escape') {
-                    setEditingTextId(null);
-                  }
-                }}
-                onBlur={(e) => {
-                  handleSaveTextEdit(t.id, e.target.value);
-                }}
-                className="w-full h-full px-1.5 outline-none text-black bg-white"
-                style={{
-                  fontSize: `${sizeToUse}px`,
-                  fontFamily: fontFamily,
-                  fontStyle: fontStyle,
-                  fontWeight: fontWeight,
-                  color: customColor,
-                  lineHeight: 1,
-                }}
-              />
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setEditingTextId(null);
-                }}
-                className="text-gray-400 hover:text-gray-600 p-0.5 cursor-pointer flex-shrink-0"
-                title="Hủy"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          );
-        }
+        // Trạng thái hiển thị chữ:
+        // - Nếu đang sửa hoặc đã sửa đổi -> hiển thị màu thật, có nền trắng đè lên canvas để xóa chữ cũ
+        // - Nếu chưa sửa và chưa edit -> hiển thị trong suốt (color: transparent) để người dùng thấy chữ thật của canvas ở dưới nhưng vẫn click chuột được vào đúng ký tự
+        const shouldShowReal = isEditing || isModified;
+        const textColor = shouldShowReal ? customColor : 'transparent';
+        const bgColor = (shouldShowReal && hasBg) ? 'white' : 'transparent';
+
+        const textStyle: React.CSSProperties = {
+          fontSize: `${sizeToUse}px`,
+          fontFamily,
+          fontStyle,
+          fontWeight,
+          color: textColor,
+          backgroundColor: bgColor,
+          lineHeight: 1.2,
+          whiteSpace: 'nowrap',
+          display: 'inline-block',
+        };
+
+        // Bounding box viền nét đứt khi hover giống Foxit
+        const borderStyle = isEditMode
+          ? (isEditing
+              ? '2px solid #3b82f6'
+              : (showTextHighlights ? '1px dashed #f97316' : 'none'))
+          : 'none';
 
         return (
-          <div
-            key={t.id}
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              setSelectedTextId(t.id);
-            }}
-            onDoubleClick={(e) => {
-              e.stopPropagation();
-              setEditingTextId(t.id);
-            }}
-            className={`absolute cursor-pointer transition-shadow z-30 group ${
-              isSelected ? 'ring-2 ring-blue-500 shadow-md' : 'hover:ring-1 hover:ring-blue-300'
-            }`}
-            style={{
-              left: baselineX,
-              bottom: bottomOffsetForBaseline,
-              fontSize: `${sizeToUse}px`,
-              fontFamily: fontFamily,
-              fontStyle: fontStyle,
-              fontWeight: fontWeight,
-              color: customColor,
-              lineHeight: 1,
-              transform: `rotate(${t.rotation || 0}deg)`,
-              transformOrigin: 'left bottom',
-              whiteSpace: 'nowrap',
-            }}
-            title="Nhấp một lần để định dạng, nhấp đúp để sửa chữ"
-          >
-            {hasBg && (
-              <div 
-                className="absolute bg-white pointer-events-none" 
-                style={{
-                  left: -1,
-                  bottom: `${descenderShift - 1}px`,
-                  width: t.width + 2,
-                  height: t.height + 2,
-                  zIndex: -1,
-                }}
-              />
-            )}
-            <span className="block select-none">{t.text}</span>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                handleRestoreText(t.id);
-                if (selectedTextId === t.id) setSelectedTextId(null);
+          <React.Fragment key={t.id}>
+            {/* Thanh công cụ nổi phía trên chữ đang edit */}
+            {isEditing && renderFloatingFormatBar(t, baselineX, bottomOffsetForBaseline)}
+
+            <div
+              contentEditable={isEditMode}
+              suppressContentEditableWarning
+              spellCheck={false}
+              className={`absolute select-text z-30 transition-all ${
+                isEditMode ? 'cursor-text hover:bg-orange-200/10' : ''
+              }`}
+              style={{
+                left: baselineX,
+                bottom: bottomOffsetForBaseline,
+                ...textStyle,
+                transform: `rotate(${t.rotation || 0}deg)`,
+                transformOrigin: 'left bottom',
+                outline: borderStyle,
+                outlineOffset: '2px',
+                minWidth: isEditing ? `${Math.max(t.width, 30)}px` : undefined,
+                minHeight: isEditing ? `${sizeToUse * 1.3}px` : undefined,
               }}
-              className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-600 cursor-pointer shadow transition-all duration-150 z-50"
-              title="Khôi phục chữ gốc"
-            >
-              <X className="w-2.5 h-2.5 stroke-[3]" />
-            </button>
-          </div>
+              onMouseDown={(e) => {
+                if (isEditMode) {
+                  e.stopPropagation();
+                }
+              }}
+              onClick={(e) => {
+                if (isEditMode) {
+                  e.stopPropagation();
+                  // Kích hoạt edit mode nếu chưa kích hoạt
+                  if (editingTextId !== t.id) {
+                    setEditingTextId(t.id);
+                    ensureFontsLoaded();
+                    if (!t.isModified) {
+                      // Đánh dấu đã modified để vẽ nền trắng xóa chữ gốc ngay lập tức
+                      setPdfTexts(prev => prev.map(item =>
+                        item.id === t.id ? { ...item, isModified: true } : item
+                      ));
+                    }
+                  }
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  e.currentTarget.blur();
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setEditingTextId(null);
+                  setSelectedTextId(null);
+                }
+              }}
+              onBlur={(e) => {
+                // Nếu click vào floating bar thì không lưu/blur
+                if ((e.relatedTarget as HTMLElement)?.closest?.('[data-floating-bar="true"]')) {
+                  e.preventDefault();
+                  return;
+                }
+                const newText = e.currentTarget.innerText.replace(/\n/g, ' ').trim();
+                handleSaveTextEdit(t.id, newText || t.text);
+              }}
+              // Render chữ trực tiếp để trình duyệt xác định caret position chuẩn xác
+              dangerouslySetInnerHTML={{ __html: t.text }}
+            />
+          </React.Fragment>
         );
       });
   }
