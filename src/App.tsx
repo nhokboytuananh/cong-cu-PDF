@@ -48,7 +48,11 @@ type PdfTextItem = {
 
 const getIsSerif = (fontName: string): boolean => {
   const name = (fontName || '').toLowerCase();
-  if (name.includes('sans') || name.includes('arial') || name.includes('helvetica') || name.includes('calibri') || name.includes('roboto') || name.includes('inter')) {
+  // Bổ sung các font sans-serif phổ biến khác như tahoma, verdana, segoe, arimo
+  if (name.includes('sans') || name.includes('arial') || name.includes('helvetica') || 
+      name.includes('calibri') || name.includes('roboto') || name.includes('inter') || 
+      name.includes('tahoma') || name.includes('verdana') || name.includes('segoe') || 
+      name.includes('arimo')) {
     return false;
   }
   if (name.includes('courier') || name.includes('mono') || name.includes('consolas')) {
@@ -103,28 +107,28 @@ const getFontFamily = (fontName: string): string => {
       name.includes('inconsolata') || name.includes('sourcecodemono') || name.includes('firacode')) {
     return '"Courier New", Courier, monospace';
   }
-  // Sans-serif phổ biến -> ưu tiên dùng Arimo và Roboto đã được nạp từ Google Fonts
+  // Sans-serif phổ biến -> ưu tiên hiển thị Arial của hệ thống trước, fallback về Arimo/Roboto
   if (name.includes('helvetica') || name.includes('arial') || name.includes('calibri') ||
       name.includes('sans') || name.includes('roboto') || name.includes('inter') ||
       name.includes('opensans') || name.includes('nunito') || name.includes('lato') ||
       name.includes('ubuntu') || name.includes('gill') || name.includes('futura') ||
       name.includes('optima') || name.includes('tahoma') || name.includes('verdana') ||
       name.includes('trebuchet') || name.includes('segoe')) {
-    return '"Arimo", "Roboto", "Arial", sans-serif';
+    return '"Arial", "Arimo", "Roboto", sans-serif';
   }
-  // Serif phổ biến -> ưu tiên dùng Tinos đã được nạp từ Google Fonts
+  // Serif phổ biến -> ưu tiên hiển thị Times New Roman của hệ thống trước, fallback về Tinos
   if (name.includes('times') || name.includes('georgia') || name.includes('palatino') ||
       name.includes('garamond') || name.includes('baskerville') || name.includes('cambria') ||
       name.includes('book antiqua') || name.includes('century') || name.includes('minion') ||
       name.includes('constantia') || name.includes('tinos') || name.includes('serif')) {
-    return '"Tinos", "Times New Roman", Times, serif';
+    return '"Times New Roman", "Tinos", Times, serif';
   }
   // Font tiếng Việt phổ biến → sans-serif
   if (name.includes('unicode') || name.includes('viet') || name.includes('arimo') || name.includes('noto')) {
-    return '"Arimo", "Arial", sans-serif';
+    return '"Arial", "Arimo", sans-serif';
   }
-  // Mặc định: nếu không nhận ra thì dùng serif (Tinos)
-  return '"Tinos", "Times New Roman", Times, serif';
+  // Mặc định: nếu không nhận ra thì dùng serif (Times New Roman)
+  return '"Times New Roman", "Tinos", Times, serif';
 };
 
 export default function App() {
@@ -228,38 +232,35 @@ export default function App() {
       };
 
       const serifRegularUrls = [
+        'https://raw.githubusercontent.com/asif-mahmud/times-new-roman/master/times.ttf',
         'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/tinos/Tinos-Regular.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/tinos/Tinos-Regular.ttf',
-        'https://raw.githubusercontent.com/googlefonts/tinos/master/fonts/ttf/Tinos-Regular.ttf'
+        'https://raw.githubusercontent.com/google/fonts/main/ofl/tinos/Tinos-Regular.ttf'
       ];
       const serifBoldUrls = [
+        'https://raw.githubusercontent.com/asif-mahmud/times-new-roman/master/timesbd.ttf',
         'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/tinos/Tinos-Bold.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/tinos/Tinos-Bold.ttf',
-        'https://raw.githubusercontent.com/googlefonts/tinos/master/fonts/ttf/Tinos-Bold.ttf'
+        'https://raw.githubusercontent.com/google/fonts/main/ofl/tinos/Tinos-Bold.ttf'
       ];
       const serifItalicUrls = [
+        'https://raw.githubusercontent.com/asif-mahmud/times-new-roman/master/timesi.ttf',
         'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/tinos/Tinos-Italic.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/tinos/Tinos-Italic.ttf',
-        'https://raw.githubusercontent.com/googlefonts/tinos/master/fonts/ttf/Tinos-Italic.ttf'
+        'https://raw.githubusercontent.com/google/fonts/main/ofl/tinos/Tinos-Italic.ttf'
       ];
 
       const sansRegularUrls = [
-        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/roboto/static/Roboto-Regular.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Regular.ttf',
+        'https://raw.githubusercontent.com/catap/msttcorefonts/master/arial.ttf',
         'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/arimo/Arimo-Regular.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/arimo/Arimo-Regular.ttf'
+        'https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Regular.ttf'
       ];
       const sansBoldUrls = [
-        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/roboto/static/Roboto-Bold.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Bold.ttf',
+        'https://raw.githubusercontent.com/catap/msttcorefonts/master/arialbd.ttf',
         'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/arimo/Arimo-Bold.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/arimo/Arimo-Bold.ttf'
+        'https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Bold.ttf'
       ];
       const sansItalicUrls = [
-        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/roboto/static/Roboto-Italic.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Italic.ttf',
+        'https://raw.githubusercontent.com/catap/msttcorefonts/master/ariali.ttf',
         'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/arimo/Arimo-Italic.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/arimo/Arimo-Italic.ttf'
+        'https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Italic.ttf'
       ];
 
       const [sr, sb, si, sar, sab, sai] = await Promise.all([
@@ -499,10 +500,12 @@ export default function App() {
             pdfWidth: item.width,
             pdfHeight: fontSize,
             // default custom styles
-            customFontFamily: getIsSerif(resolvedFontName) ? 'serif' : 'sans-serif',
+            // Kết hợp kiểm tra cả resolvedFontName (từ pdf.js) và pdfInternalFontName (tên font nhúng gốc trong PDF) để nhận diện Serif/Sans-serif chính xác nhất
+            customFontFamily: (getIsSerif(resolvedFontName) && getIsSerif(pdfInternalFontName)) ? 'serif' : 'sans-serif',
             customFontSize: fontSize,
-            isBold: resolvedFontName.toLowerCase().includes('bold') || false,
-            isItalic: resolvedFontName.toLowerCase().includes('italic') || resolvedFontName.toLowerCase().includes('oblique') || false,
+            isBold: resolvedFontName.toLowerCase().includes('bold') || pdfInternalFontName.toLowerCase().includes('bold') || false,
+            isItalic: resolvedFontName.toLowerCase().includes('italic') || resolvedFontName.toLowerCase().includes('oblique') || 
+                      pdfInternalFontName.toLowerCase().includes('italic') || pdfInternalFontName.toLowerCase().includes('oblique') || false,
             offsetX: 0,
             offsetY: 0,
             hasBackground: true,
@@ -2711,10 +2714,18 @@ export default function App() {
           e.preventDefault();
         }}
       >
-        {/* Tên phông chữ gốc */}
-        <span className="text-[10px] text-gray-500 font-mono truncate max-w-[90px] border border-gray-200 rounded px-1.5 py-0.5 bg-gray-50" title={`Font gốc: ${detectedFont}`}>
-          {detectedFont.slice(0, 14)}
-        </span>
+        {/* Dropdown chọn phông chữ nhanh hỗ trợ tự sửa phông sai */}
+        <select
+          value={t.customFontFamily || ''}
+          onChange={(e) => handlePropChange({ customFontFamily: e.target.value || undefined })}
+          className="text-[10px] border border-gray-200 rounded px-1.5 py-0.5 bg-gray-50 text-gray-700 outline-none font-semibold cursor-pointer max-w-[110px]"
+          title={`Font gốc: ${detectedFont}. Chọn phông chữ khác nếu tự động nhận dạng bị sai.`}
+        >
+          <option value="">Tự động ({detectedFont.slice(0, 8)})</option>
+          <option value="sans-serif">Arial (Không chân)</option>
+          <option value="serif">Times New Roman (Có chân)</option>
+          <option value="monospace">Courier New (Mã máy)</option>
+        </select>
 
         {/* Cỡ chữ */}
         <input
