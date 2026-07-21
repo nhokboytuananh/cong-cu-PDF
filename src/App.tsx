@@ -500,8 +500,8 @@ export default function App() {
             pdfWidth: item.width,
             pdfHeight: fontSize,
             // default custom styles
-            // Kết hợp kiểm tra cả resolvedFontName (từ pdf.js) và pdfInternalFontName (tên font nhúng gốc trong PDF) để nhận diện Serif/Sans-serif chính xác nhất
-            customFontFamily: (getIsSerif(resolvedFontName) && getIsSerif(pdfInternalFontName)) ? 'serif' : 'sans-serif',
+            // Ưu tiên tin cậy tên font gốc trong PDF (pdfInternalFontName) trước để tránh PDF.js giải mã sai sang sans-serif
+            customFontFamily: getIsSerif(pdfInternalFontName || resolvedFontName || 'serif') ? 'serif' : 'sans-serif',
             customFontSize: fontSize,
             isBold: resolvedFontName.toLowerCase().includes('bold') || pdfInternalFontName.toLowerCase().includes('bold') || false,
             isItalic: resolvedFontName.toLowerCase().includes('italic') || resolvedFontName.toLowerCase().includes('oblique') || 
