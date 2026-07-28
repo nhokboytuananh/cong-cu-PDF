@@ -1021,7 +1021,7 @@ export default function App() {
           type: 'highlight',
           name: defaultName,
           highlightColor: '#FFFF00',
-          opacity: 0.35,
+          opacity: 0.55,
         }]);
         setSelectedFieldId(newId);
       }
@@ -1336,7 +1336,7 @@ export default function App() {
           } else if (f.type === 'highlight') {
             try {
               const highlightColor = hexToRgb(f.highlightColor || '#FFFF00');
-              const opacity = f.opacity !== undefined ? f.opacity : 0.35;
+              const opacity = f.opacity !== undefined ? f.opacity : 0.55;
               page.drawRectangle({
                 x: fieldX,
                 y: fieldY,
@@ -2567,7 +2567,7 @@ export default function App() {
 
          const highlightBgStyle = isHighlight ? {
            backgroundColor: f.highlightColor || '#FFFF00',
-           opacity: f.opacity !== undefined ? f.opacity : 0.35,
+           opacity: f.opacity !== undefined ? f.opacity : 0.55,
          } : {};
 
          return (
@@ -2600,76 +2600,62 @@ export default function App() {
            }}
          >
              {/* Content Icon & Text */}
-             <div className={`absolute inset-0 flex flex-col items-center justify-center p-1 text-center gap-0.5 ${isSelected ? '' : 'pointer-events-none select-none'}`}>
-                 {isHighlight ? (
-                     <div className="flex items-center gap-1">
-                         <Highlighter className="w-3.5 h-3.5 text-amber-800 pointer-events-none drop-shadow-xs" />
-                         {isSelected && (
-                             <span className="text-[9px] font-bold text-amber-900 leading-none truncate max-w-full">
-                                 {f.name}
-                             </span>
-                         )}
-                     </div>
-                 ) : isText ? (
-                     <>
-                         <Type className="w-4 h-4 text-blue-600 pointer-events-none" />
-                         {isSelected ? (
-                             <input 
-                                 type="text" 
-                                 value={f.textValue || f.name} 
-                                 placeholder="Nhập nội dung..."
-                                 autoFocus
-                                 onFocus={(e) => e.target.select()}
-                                 onChange={(e) => {
-                                   setFields(fields.map(field => field.id === f.id ? { ...field, textValue: e.target.value } : field));
-                                 }}
-                                 onMouseDown={(e) => e.stopPropagation()}
-                                 onClick={(e) => e.stopPropagation()}
-                                 style={{
-                                   fontFamily: getFontFamily(f.fontFamily || 'sans-serif'),
-                                   color: f.color || '#000000',
-                                   fontSize: f.fontSize ? `${Math.min(f.fontSize, 18)}px` : '12px'
-                                 }}
-                                 className="font-bold text-center bg-white/90 border border-blue-300 rounded px-1 py-0.5 w-full outline-none focus:ring-1 focus:ring-blue-500"
-                             />
-                         ) : (
-                             <span 
-                               style={{
-                                 fontFamily: getFontFamily(f.fontFamily || 'sans-serif'),
-                                 color: f.color || '#000000',
-                                 fontSize: f.fontSize ? `${Math.min(f.fontSize, 16)}px` : '12px'
-                               }}
-                               className="font-bold leading-none truncate max-w-full"
-                             >
-                                 {f.textValue || f.name}
-                             </span>
-                         )}
-                     </>
-                 ) : (
-                     <>
-                         <PenSquare className="w-5 h-5 text-indigo-600 pointer-events-none" />
-                         {isSelected ? (
-                             <input 
-                                 type="text" 
-                                 value={f.name} 
-                                 autoFocus
-                                 onFocus={(e) => e.target.select()}
-                                 onChange={(e) => {
-                                   setFields(fields.map(field => field.id === f.id ? { ...field, name: e.target.value } : field));
-                                 }}
-                                 onMouseDown={(e) => e.stopPropagation()}
-                                 onClick={(e) => e.stopPropagation()}
-                                 className="text-[11px] font-bold text-indigo-700 text-center bg-white border border-indigo-300 rounded px-1 py-0.5 w-full outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
-                             />
-                         ) : (
-                             <span className="text-[11px] font-bold text-indigo-700 leading-none truncate max-w-full">{f.name}</span>
-                         )}
-                     </>
-                 )}
-             </div>
-             
-             {/* Corner Handles for resizing */}
-             {isSelected && activeTool === 'Select' && (
+              <div className={`absolute inset-0 flex flex-col items-center justify-center p-1 text-center gap-0.5 ${isSelected ? '' : 'pointer-events-none select-none'}`}>
+                  {isHighlight ? null : isText ? (
+                      isSelected ? (
+                          <textarea 
+                              value={f.textValue || ''} 
+                              placeholder="Nhập nội dung chữ..."
+                              autoFocus
+                              onChange={(e) => {
+                                setFields(fields.map(field => field.id === f.id ? { ...field, textValue: e.target.value } : field));
+                              }}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                fontFamily: getFontFamily(f.fontFamily || 'sans-serif'),
+                                color: f.color || '#000000',
+                                fontSize: f.fontSize ? `${Math.min(f.fontSize, 20)}px` : '14px'
+                              }}
+                              className="font-semibold text-left bg-white/80 border border-blue-400 rounded p-1 w-full h-full outline-none focus:ring-1 focus:ring-blue-500 resize-none leading-normal"
+                          />
+                      ) : (
+                          <span 
+                            style={{
+                              fontFamily: getFontFamily(f.fontFamily || 'sans-serif'),
+                              color: f.color || '#000000',
+                              fontSize: f.fontSize ? `${Math.min(f.fontSize, 18)}px` : '14px'
+                            }}
+                            className={`font-semibold leading-normal truncate max-w-full w-full text-left p-0.5 ${!f.textValue ? 'text-gray-400 italic text-[11px]' : ''}`}
+                          >
+                              {f.textValue || 'Nhấp để nhập chữ...'}
+                          </span>
+                      )
+                  ) : (
+                      <>
+                          <PenSquare className="w-5 h-5 text-indigo-600 pointer-events-none" />
+                          {isSelected ? (
+                              <input 
+                                  type="text" 
+                                  value={f.name} 
+                                  autoFocus
+                                  onFocus={(e) => e.target.select()}
+                                  onChange={(e) => {
+                                    setFields(fields.map(field => field.id === f.id ? { ...field, name: e.target.value } : field));
+                                  }}
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="text-[11px] font-bold text-indigo-700 text-center bg-white border border-indigo-300 rounded px-1 py-0.5 w-full outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
+                              />
+                          ) : (
+                              <span className="text-[11px] font-bold text-indigo-700 leading-none truncate max-w-full">{f.name}</span>
+                          )}
+                      </>
+                  )}
+              </div>
+              
+              {/* Corner Handles for resizing */}
+             {isSelected && (
                  <>
                      <div onMouseDown={(e) => handleResizeDown(e, f, 'nw')} className={`absolute top-0 left-0 w-1.5 h-1.5 ${activeColorClass} transform -translate-x-1/2 -translate-y-1/2 cursor-nwse-resize border border-white rounded-full z-10`}></div>
                      <div onMouseDown={(e) => handleResizeDown(e, f, 'n')} className={`absolute top-0 left-1/2 w-1.5 h-1.5 ${activeColorClass} transform -translate-x-1/2 -translate-y-1/2 cursor-ns-resize border border-white rounded-full z-10`}></div>
@@ -2694,7 +2680,7 @@ export default function App() {
              </button>
              
              {/* Properties Popup Wrapper */}
-             {isSelected && activeTool === 'Select' && (
+             {isSelected && (
                  <div className="absolute left-0 top-[calc(100%+4px)] bg-white border border-gray-200 rounded-md p-2.5 shadow-lg z-50 text-[11px] font-sans text-gray-800 cursor-default w-[230px]"
                   onMouseDown={(e) => e.stopPropagation()}
                  >
@@ -2715,7 +2701,7 @@ export default function App() {
                                  <div className="flex flex-col gap-1">
                                      <span className="font-semibold text-gray-700">Màu tô sáng (Highlight):</span>
                                      <div className="flex items-center gap-1.5">
-                                         {['#FFFF00', '#00FF00', '#FF69B4', '#00BFFF', '#FFA500'].map(c => (
+                                         {['#FFFF00', '#22C55E', '#EC4899', '#3B82F6', '#F97316', '#A855F7'].map(c => (
                                              <button
                                                  key={c}
                                                  type="button"
@@ -2737,14 +2723,14 @@ export default function App() {
                                  <div className="flex flex-col gap-1">
                                      <div className="flex justify-between items-center">
                                          <span className="font-semibold text-gray-700">Độ mờ (Opacity):</span>
-                                         <span className="font-mono text-gray-600">{Math.round((f.opacity !== undefined ? f.opacity : 0.35) * 100)}%</span>
+                                         <span className="font-mono text-gray-600">{Math.round((f.opacity !== undefined ? f.opacity : 0.55) * 100)}%</span>
                                      </div>
                                      <input 
                                          type="range"
                                          min={0.1}
                                          max={0.9}
                                          step={0.05}
-                                         value={f.opacity !== undefined ? f.opacity : 0.35}
+                                         value={f.opacity !== undefined ? f.opacity : 0.55}
                                          onChange={(e) => {
                                            const op = parseFloat(e.target.value);
                                            setFields(fields.map(field => field.id === f.id ? { ...field, opacity: op } : field));
