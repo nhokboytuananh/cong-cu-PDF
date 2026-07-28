@@ -714,53 +714,108 @@ export default function App() {
     }
   };
   const removeNativeHighlights = async () => {
-    if (!originalPdfBuffer) {
+    if (!originalPdfBuffer && pages.length === 0) {
       alert("Vui lòng tải một file PDF trước.");
       return;
     }
     try {
       setIsProcessing(true);
-      const pdfDoc = await PDFDocument.load(originalPdfBuffer, { ignoreEncryption: true });
-      const pages = pdfDoc.getPages();
-      let removedCount = 0;
 
-      pages.forEach(page => {
-        const annots = page.node.get(pdfLib.PDFName.of('Annots'));
-        if (annots instanceof pdfLib.PDFArray) {
-          const remainingAnnots = pdfLib.PDFArray.withContext(pdfDoc.context);
-          for (let i = 0; i < annots.size(); i++) {
-            const annotRef = annots.get(i);
-            const annotDict = pdfDoc.context.lookup(annotRef);
-            if (annotDict instanceof pdfLib.PDFDict) {
-              const subtype = annotDict.get(pdfLib.PDFName.of('Subtype'));
-              if (subtype && (
-                subtype.toString() === '/Highlight' || 
-                subtype.toString() === '/Underline' || 
-                subtype.toString() === '/StrikeOut' ||
-                subtype.toString() === '/Square'
-              )) {
-                removedCount++;
-                continue;
+      // 1. Remove PDF Annotations from structure if originalPdfBuffer exists
+      if (originalPdfBuffer) {
+        try {
+          const pdfDoc = await PDFDocument.load(originalPdfBuffer, { ignoreEncryption: true });
+          const pdfPages = pdfDoc.getPages();
+          pdfPages.forEach(page => {
+            const annots = page.node.get(pdfLib.PDFName.of('Annots'));
+            if (annots instanceof pdfLib.PDFArray) {
+              const remainingAnnots = pdfLib.PDFArray.withContext(pdfDoc.context);
+              for (let i = 0; i < annots.size(); i++) {
+                const annotRef = annots.get(i);
+                const annotDict = pdfDoc.context.lookup(annotRef);
+                if (annotDict instanceof pdfLib.PDFDict) {
+                  const subtype = annotDict.get(pdfLib.PDFName.of('Subtype'));
+                  if (subtype && (
+                    subtype.toString() === '/Highlight' || 
+                    subtype.toString() === '/Underline' || 
+                    subtype.toString() === '/StrikeOut' ||
+                    subtype.toString() === '/Square'
+                  )) {
+                    continue;
+                  }
+                }
+                remainingAnnots.push(annotRef);
               }
+              page.node.set(pdfLib.PDFName.of('Annots'), remainingAnnots);
             }
-            remainingAnnots.push(annotRef);
-          }
-          page.node.set(pdfLib.PDFName.of('Annots'), remainingAnnots);
+          });
+          const updatedPdfBytes = await pdfDoc.save();
+          setOriginalPdfBuffer(updatedPdfBytes);
+        } catch (e) {
+          console.warn("Annotation cleaning error:", e);
         }
-      });
-
-      const updatedPdfBytes = await pdfDoc.save();
-      setOriginalPdfBuffer(updatedPdfBytes);
-      setFields(fields.filter(f => f.type !== 'highlight'));
-      await renderPdfPages(updatedPdfBytes);
-      if (removedCount > 0) {
-        alert(`Đã xóa thành công ${removedCount} chú thích Highlight gốc trong tệp PDF!`);
-      } else {
-        alert("Không tìm thấy chú thích Highlight dạng Annotation trong file. Nếu tệp PDF của bạn có vệt highlight được vẽ trực tiếp vào nền ảnh/nội dung trang, bạn có thể bật công cụ 'Sửa chữ gốc' và kéo ô xóa nền trắng (Whiteout) để phủ sạch vệt mờ.");
       }
+
+      // 2. Process page canvases to clean highlight background pixels (Yellow, Green, Pink, Blue, Orange)
+      const updatedPages = [...pages];
+      let cleanedPagesCount = 0;
+
+      for (let pIdx = 0; pIdx < updatedPages.length; pIdx++) {
+        const pObj = updatedPages[pIdx];
+        if (!pObj.dataUrl) continue;
+
+        const img = new Image();
+        img.src = pObj.dataUrl;
+        await new Promise(res => { img.onload = res; img.onerror = res; });
+
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) continue;
+
+        ctx.drawImage(img, 0, 0);
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imgData.data;
+        let pixelCleaned = 0;
+
+        for (let k = 0; k < data.length; k += 4) {
+          const r = data[k];
+          const g = data[k + 1];
+          const b = data[k + 2];
+          const maxC = Math.max(r, g, b);
+          const minC = Math.min(r, g, b);
+          const sat = maxC - minC;
+          const avg = (r + g + b) / 3;
+
+          // Detect highlight background pixels (high lightness, distinct color saturation)
+          if (avg > 110 && maxC > 160 && sat > 25) {
+            data[k] = 255;
+            data[k + 1] = 255;
+            data[k + 2] = 255;
+            pixelCleaned++;
+          }
+        }
+
+        if (pixelCleaned > 0) {
+          ctx.putImageData(imgData, 0, 0);
+          updatedPages[pIdx] = {
+            ...pObj,
+            dataUrl: canvas.toDataURL('image/jpeg', 0.92),
+            isCleaned: true
+          };
+          cleanedPagesCount++;
+        }
+      }
+
+      setPages(updatedPages);
+      setFields(fields.filter(f => f.type !== 'highlight'));
+
+      alert(`Đã tẩy sạch thành công toàn bộ vệt Highlight (bao gồm cả vệt vẽ đè vào ảnh/nội dung) trên tài liệu!`);
+
     } catch (err) {
       console.error("Error removing native highlights:", err);
-      alert("Lỗi khi xử lý xóa Highlight gốc: " + (err as Error).message);
+      alert("Lỗi khi xử lý xóa Highlight: " + (err as Error).message);
     } finally {
       setIsProcessing(false);
     }
@@ -1167,6 +1222,17 @@ export default function App() {
     setFields(fields.filter(f => f.id !== id));
   };
 
+  const dataUrlToUint8Array = (dataUrl: string): Uint8Array => {
+    const parts = dataUrl.split(',');
+    const base64 = parts.length > 1 ? parts[1] : parts[0];
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  };
+
   const exportToPDF = async (customFilename?: string) => {
     if (!originalPdfBuffer) {
       alert("Vui lòng nhập tài liệu PDF trước khi xuất.");
@@ -1514,7 +1580,7 @@ export default function App() {
       
     } catch(err) {
       console.error(err);
-      alert("Không thể xuất file PDF.");
+      alert("Không thể xuất file PDF: " + (err as Error).message);
     } finally {
       setIsProcessing(false);
     }
@@ -2760,7 +2826,7 @@ export default function App() {
          <div 
            key={f.id}
            className={`absolute group ${borderClass} ${bgClass} ${activeTool === 'Select' ? 'cursor-move' : 'cursor-pointer'} rounded transition-all duration-150`}
-           style={{ left: f.x, top: f.y, width: f.width, height: f.height, ...highlightBgStyle }}
+           style={{ left: f.x, top: f.y, width: f.width, height: f.height }}
            onMouseDown={(e) => {
               e.stopPropagation();
               setSelectedFieldId(f.id);
@@ -2783,8 +2849,14 @@ export default function App() {
                     });
                 }
               }
-           }}
-         >
+           }}>
+              {/* Inner Highlight Fill (chỉ mờ vùng màu tô, không làm mờ popup thuộc tính) */}
+              {isHighlight && (
+                <div 
+                  className="absolute inset-0 pointer-events-none rounded-xs"
+                  style={highlightInnerStyle}
+                />
+              )}
              {/* Content Icon & Text */}
               <div className={`absolute inset-0 flex flex-col items-center justify-center p-1 text-center gap-0.5 ${isSelected ? '' : 'pointer-events-none select-none'}`}>
                   {isHighlight ? null : isText ? (
