@@ -4,7 +4,7 @@
  */
 import React, { useState, useRef, useEffect } from 'react';
 import { 
-  PenSquare, Layout, FileDown, X, MousePointer2, FileUp, Loader2, FilePlus, Trash2, Type, ArrowUp, ArrowDown, Edit, HelpCircle, Info, CheckCircle2, MousePointerClick, Bold, Italic, Settings2, Highlighter
+  PenSquare, Layout, FileDown, X, MousePointer2, FileUp, Loader2, FilePlus, Trash2, Type, ArrowUp, ArrowDown, Edit, HelpCircle, Info, CheckCircle2, MousePointerClick, Bold, Italic, Settings2, Highlighter, Eraser
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as pdfLib from 'pdf-lib';
@@ -714,96 +714,57 @@ export default function App() {
     }
   };
   const removeNativeHighlights = async () => {
-    if (!originalPdfBuffer && pages.length === 0) {
+    if (!originalPdfBuffer) {
       alert("Vui lòng tải một file PDF trước.");
       return;
     }
     try {
       setIsProcessing(true);
+      const pdfDoc = await PDFDocument.load(originalPdfBuffer, { ignoreEncryption: true });
+      const pages = pdfDoc.getPages();
+      let removedCount = 0;
 
-      // 1. Remove PDF Annotations from structure if originalPdfBuffer exists
-      if (originalPdfBuffer) {
-        try {
-          const pdfDoc = await PDFDocument.load(originalPdfBuffer, { ignoreEncryption: true });
-          const pdfPages = pdfDoc.getPages();
-          pdfPages.forEach(page => {
-            const annots = page.node.get(pdfLib.PDFName.of('Annots'));
-            if (annots instanceof pdfLib.PDFArray) {
-              const remainingAnnots = pdfLib.PDFArray.withContext(pdfDoc.context);
-              for (let i = 0; i < annots.size(); i++) {
-                const annotRef = annots.get(i);
-                const annotDict = pdfDoc.context.lookup(annotRef);
-                if (annotDict instanceof pdfLib.PDFDict) {
-                  const subtype = annotDict.get(pdfLib.PDFName.of('Subtype'));
-                  if (subtype && (
-                    subtype.toString() === '/Highlight' || 
-                    subtype.toString() === '/Underline' || 
-                    subtype.toString() === '/StrikeOut' ||
-                    subtype.toString() === '/Square'
-                  )) {
-                    continue;
-                  }
-                }
-                remainingAnnots.push(annotRef);
+      pages.forEach(page => {
+        const annots = page.node.get(pdfLib.PDFName.of('Annots'));
+        if (annots instanceof pdfLib.PDFArray) {
+          const remainingAnnots = pdfLib.PDFArray.withContext(pdfDoc.context);
+          for (let i = 0; i < annots.size(); i++) {
+            const annotRef = annots.get(i);
+            const annotDict = pdfDoc.context.lookup(annotRef);
+            if (annotDict instanceof pdfLib.PDFDict) {
+              const subtype = annotDict.get(pdfLib.PDFName.of('Subtype'));
+              if (subtype && (
+                subtype.toString() === '/Highlight' || 
+                subtype.toString() === '/Underline' || 
+                subtype.toString() === '/StrikeOut' ||
+                subtype.toString() === '/Square'
+              )) {
+                removedCount++;
+                continue;
               }
-              page.node.set(pdfLib.PDFName.of('Annots'), remainingAnnots);
             }
-          });
-          const updatedPdfBytes = await pdfDoc.save();
-          setOriginalPdfBuffer(updatedPdfBytes);
-        } catch (e) {
-          console.warn("Annotation cleaning error:", e);
-        }
-      }
-
-      // 2. Process page canvases to clean highlight background pixels (Yellow, Green, Pink, Blue, Orange)
-      const updatedPages = [...pages];
-      let cleanedPagesCount = 0;
-
-      for (let pIdx = 0; pIdx < updatedPages.length; pIdx++) {
-        const pObj = updatedPages[pIdx];
-        if (!pObj.dataUrl) continue;
-
-        const img = new Image();
-        img.src = pObj.dataUrl;
-        await new Promise(res => { img.onload = res; img.onerror = res; });
-
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) continue;
-
-        ctx.drawImage(img, 0, 0);
-        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const data = imgData.data;
-        let pixelCleaned = 0;
-
-        for (let k = 0; k < data.length; k += 4) {
-          const r = data[k];
-          const g = data[k + 1];
-          const b = data[k + 2];
-          const maxC = Math.max(r, g, b);
-          const minC = Math.min(r, g, b);
-          const sat = maxC - minC;
-          const avg = (r + g + b) / 3;
-
-          // Detect highlight background pixels (high lightness, distinct color saturation)
-          if (avg > 110 && maxC > 160 && sat > 25) {
-            data[k] = 255;
-            data[k + 1] = 255;
-            data[k + 2] = 255;
-            pixelCleaned++;
+            remainingAnnots.push(annotRef);
           }
+          page.node.set(pdfLib.PDFName.of('Annots'), remainingAnnots);
         }
+      });
 
-        if (pixelCleaned > 0) {
-          ctx.putImageData(imgData, 0, 0);
-          updatedPages[pIdx] = {
-            ...pObj,
-            dataUrl: canvas.toDataURL('image/jpeg', 0.92),
-            isCleaned: true
-          };
+      const updatedPdfBytes = await pdfDoc.save();
+      setOriginalPdfBuffer(updatedPdfBytes);
+      setFields(fields.filter(f => f.type !== 'highlight'));
+      await renderPdfPages(updatedPdfBytes);
+      if (removedCount > 0) {
+        alert(`Đã xóa thành công ${removedCount} chú thích Highlight gốc trong tệp PDF!`);
+      } else {
+        alert("Đã hoàn tất kiểm tra chú thích. Để xóa các vệt highlight hoặc vết mờ bất kỳ trên trang theo ý muốn, bạn hãy bật công cụ 'Tẩy / Che nền' trên thanh công cụ và vẽ ô che màu trắng lên đúng vùng muốn tẩy.");
+      }
+    } catch (err) {
+      console.error("Error removing native highlights:", err);
+      alert("Lỗi khi xử lý xóa Highlight: " + (err as Error).message);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
           cleanedPagesCount++;
         }
       }
@@ -2465,6 +2426,12 @@ export default function App() {
               active={activeTool === 'Highlight'} 
               onClick={() => setActiveTool('Highlight')}
            />
+            <RibbonButton 
+               icon={Eraser} 
+               label={"Tẩy / Che\nnền"} 
+               active={activeTool === 'Eraser'} 
+               onClick={() => setActiveTool('Eraser')} 
+            />
            <RibbonButton 
               icon={Edit} 
               label={"Sửa chữ\ngốc"} 
@@ -2474,7 +2441,13 @@ export default function App() {
            <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-gray-500 uppercase tracking-wider">Công cụ</div>
         </div>
         
-        {activeTool === 'Highlight' && (
+        {activeTool === 'Eraser' && (
+        <div className="bg-indigo-950/95 text-white px-5 py-2.5 rounded-full text-xs font-semibold shadow-2xl flex items-center gap-2 border border-indigo-500/30 backdrop-blur-md animate-fade-in">
+          <span className="w-2.5 h-2.5 bg-emerald-400 rounded-full animate-ping"></span>
+          <span>Đang ở chế độ khoanh vùng <b>Tẩy / Che nền</b> (Kéo ô che trắng lên vùng highlight hoặc vết mờ muốn xóa. Nhấn <kbd className="bg-indigo-800 px-1.5 py-0.5 rounded text-[10px]">ESC</kbd> hoặc nút <b>Chọn</b> để thoát)</span>
+        </div>
+      )}
+      {activeTool === 'Highlight' && (
             <>
               <div className="w-px h-16 bg-gray-300" />
               <div className="flex flex-col justify-center h-[68px] border border-amber-300/80 rounded-lg px-3 bg-amber-50/60 text-[11px] gap-1.5 shadow-inner relative overflow-hidden min-w-[240px]">
@@ -2582,7 +2555,7 @@ export default function App() {
       {/* Horizontal Split Layout: Scrollable Canvas on the Left, Style Panel on the Right */}
       <div className="flex-1 flex flex-row overflow-hidden relative">
         {/* Floating Indicator for Continuous Mode */}
-        {(activeTool === 'Signature Field' || activeTool === 'Text Field' || activeTool === 'Add Text' || activeTool === 'Highlight') && (
+        {(activeTool === 'Signature Field' || activeTool === 'Text Field' || activeTool === 'Add Text' || activeTool === 'Highlight' || activeTool === 'Eraser') && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-indigo-900/95 text-white px-4 py-2.5 rounded-full shadow-lg flex items-center gap-2.5 text-xs font-semibold backdrop-blur-md border border-indigo-500/30 animate-bounce z-50">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             <span>
