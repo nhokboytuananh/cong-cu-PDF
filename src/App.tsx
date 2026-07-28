@@ -2766,7 +2766,7 @@ export default function App() {
                : 'bg-indigo-50/90 border-indigo-500 hover:bg-indigo-100/90');
            
          const borderClass = isHighlight
-           ? (isSelected ? 'border-2 border-amber-600 z-50 shadow-md' : 'border border-dashed border-amber-500 hover:border-amber-600')
+            ? (isSelected ? 'border-2 border-amber-600 z-50 shadow-md' : 'border border-transparent hover:border-amber-400/60')
            : (isSelected 
                ? (isText ? 'border-2 border-blue-600 z-50 shadow-md' : 'border-2 border-indigo-600 z-50 shadow-md') 
                : (isText ? 'border border-dashed border-blue-400 hover:border-blue-600' : 'border border-dashed border-indigo-400 hover:border-indigo-600'));
@@ -2774,11 +2774,11 @@ export default function App() {
          const activeColorClass = isHighlight ? 'bg-amber-500' : (isText ? 'bg-blue-600' : 'bg-indigo-600');
          const focusRingClass = isHighlight ? 'focus:border-amber-500 focus:ring-amber-500' : (isText ? 'focus:border-blue-500 focus:ring-blue-500' : 'focus:border-indigo-500 focus:ring-indigo-500');
 
-         const highlightBgStyle = isHighlight ? {
-           backgroundColor: f.highlightColor || '#FFFF00',
-           opacity: f.opacity !== undefined ? f.opacity : 0.55,
-         } : {};
-
+          const highlightInnerStyle: React.CSSProperties = isHighlight ? {
+            backgroundColor: f.highlightColor || '#FFFF00',
+            opacity: f.opacity !== undefined ? f.opacity : 0.55,
+            mixBlendMode: 'multiply',
+          } : {};
          return (
          <div 
            key={f.id}
@@ -2910,7 +2910,7 @@ export default function App() {
                              <>
                                  
                                  <div className="flex flex-col gap-1">
-                                     <span className="font-semibold text-gray-700">Màu tô sáng (Highlight):</span>
+                                     <span className="font-semibold text-gray-700">Màu sắc Highlight 🖍️:</span>
                                      <div className="flex items-center gap-1.5">
                                          {['#FFFF00', '#22C55E', '#EC4899', '#3B82F6', '#F97316', '#A855F7'].map(c => (
                                              <button
@@ -3082,7 +3082,7 @@ export default function App() {
 
     const borderClass = isHighlight ? 'border-amber-500 bg-amber-200/50' : (isText ? 'border-blue-600 bg-blue-50' : 'border-indigo-600 bg-indigo-50');
     const labelBg = isHighlight ? 'bg-amber-500' : (isText ? 'bg-blue-600' : 'bg-indigo-600');
-    const label = isHighlight ? 'Tô sáng' : (isText ? 'Thêm chữ' : 'Trường chữ ký');
+    const label = isHighlight ? 'Highlight 🖍️' : (isText ? 'Thêm chữ' : 'Trường chữ ký');
     return (
       <div
         className={`absolute border border-dashed bg-opacity-40 ${borderClass}`}
