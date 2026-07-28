@@ -2048,9 +2048,32 @@ export default function App() {
                     <div className="flex flex-col gap-4">
                        <h4 className="text-base font-bold text-gray-800 flex items-center gap-2">
                           <span className="w-1.5 h-6 bg-indigo-600 rounded-full" />
+                          Vùng ký số, Thêm chữ & Tô sáng (Highlight) PDF
+                       </h4>
+                       <p>Chức năng giúp bạn đính kèm chữ ký, chèn chữ mới với phông/màu tùy chỉnh hoặc tô sáng các vùng quan trọng trong tài liệu PDF.</p>
+                       <ul className="space-y-3 pl-1">
+                          <li className="flex items-start gap-2">
+                             <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">1</div>
+                             <div>
+                                <strong className="text-gray-800">Tạo trường vùng ký số chuẩn:</strong> Chọn công cụ <span className="inline-flex items-center gap-0.5 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-300 font-medium text-xs text-gray-700"><PenSquare className="w-3.5 h-3.5 text-indigo-600" /> Trường chữ ký</span> trên thanh công cụ. Click chuột và kéo vẽ khung vùng ký số AcroForm chuẩn.
+                             </div>
+                          </li>
+                          <li className="flex items-start gap-2">
+                             <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">2</div>
+                             <div>
+                                <strong className="text-gray-800">Thêm chữ vào PDF (Chèn văn bản mới):</strong> Chọn công cụ <span className="inline-flex items-center gap-0.5 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-300 font-medium text-xs text-gray-700"><Type className="w-3.5 h-3.5 text-blue-600" /> Thêm chữ</span>. Nhấp kéo để tạo vùng chữ mới, tùy chọn trực tiếp <b>Phông chữ</b> (Arial, Times New Roman, Courier), <b>Cỡ chữ</b> và <b>Màu chữ</b> mong muốn trong hộp cài đặt.
+                             </div>
+                          </li>
+                          <li className="flex items-start gap-2">
+                             <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">3</div>
+                             <div>
+                                <strong className="text-gray-800">Tô sáng khu vực (Highlight PDF):</strong> Chọn công cụ <span className="inline-flex items-center gap-0.5 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-300 font-medium text-xs text-gray-700"><Highlighter className="w-3.5 h-3.5 text-amber-600" /> Highlight PDF</span>. Kéo chọn bất kỳ khu vực nào để tô sáng chữ hoặc khối hình ảnh với tùy chọn màu sắc (Vàng, Xanh lá, Hồng, Xanh dương, Cam) và độ mờ opacity.
+                             </div>
+                          </li>
+                          <li className="flex items-start gap-2">
                              <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">4</div>
                              <div>
-                                <strong className="text-gray-800">Điều chỉnh kích thước & Di chuyển:</strong> Chuyển về công cụ <span className="inline-flex items-center gap-0.5 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-300 font-medium text-xs text-gray-700"><MousePointer2 className="w-3.5 h-3.5 text-gray-700" /> Chọn</span> để kéo di chuyển các vùng ký hoặc thay đổi kích thước của chúng (bằng cách kéo các góc và cạnh màu đỏ/xanh). Nhấn phím <kbd className="bg-gray-100 px-1 py-0.5 border border-gray-300 rounded font-mono text-xs">Delete</kbd> để xóa nhanh một vùng đang chọn.
+                                <strong className="text-gray-800">Điều chỉnh kích thước & Di chuyển:</strong> Chuyển về công cụ <span className="inline-flex items-center gap-0.5 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-300 font-medium text-xs text-gray-700"><MousePointer2 className="w-3.5 h-3.5 text-gray-700" /> Chọn</span> để kéo di chuyển các vùng ký hoặc thay đổi kích thước của chúng. Nhấn phím <kbd className="bg-gray-100 px-1 py-0.5 border border-gray-300 rounded font-mono text-xs">Delete</kbd> để xóa nhanh một vùng đang chọn.
                              </div>
                           </li>
                        </ul>
