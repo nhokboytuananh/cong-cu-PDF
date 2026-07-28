@@ -4,7 +4,7 @@
  */
 import React, { useState, useRef, useEffect } from 'react';
 import { 
-  PenSquare, Layout, FileDown, X, MousePointer2, FileUp, Loader2, FilePlus, Trash2, Type, ArrowUp, ArrowDown, Edit, HelpCircle, Info, CheckCircle2, MousePointerClick, Bold, Italic, Settings2
+  PenSquare, Layout, FileDown, X, MousePointer2, FileUp, Loader2, FilePlus, Trash2, Type, ArrowUp, ArrowDown, Edit, HelpCircle, Info, CheckCircle2, MousePointerClick, Bold, Italic, Settings2, Highlighter
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as pdfLib from 'pdf-lib';
@@ -68,10 +68,14 @@ type Field = {
   y: number;
   width: number;
   height: number;
-  type: 'signature' | 'text';
+  type: 'signature' | 'text' | 'highlight';
   name: string;
   textValue?: string;
   fontSize?: number;
+  fontFamily?: string;
+  color?: string;
+  highlightColor?: string;
+  opacity?: number;
 };
 
 type PdfPage = {
@@ -912,14 +916,14 @@ export default function App() {
 
   const handleMouseDown = (e: React.MouseEvent, pageIndex: number) => {
     if (isDigitallySigned) {
-      alert("Tài liệu này đã được ký số. Không thể thêm trường chữ ký hoặc trường văn bản mới.");
+      alert("Tài liệu này đã được ký số. Không thể thêm trường chữ ký, văn bản hoặc highlight mới.");
       return;
     }
     if (activeTool === 'Select') {
       setSelectedFieldId(null);
       return;
     }
-    if (activeTool !== 'Signature Field' && activeTool !== 'Text Field') return;
+    if (activeTool !== 'Signature Field' && activeTool !== 'Text Field' && activeTool !== 'Add Text' && activeTool !== 'Highlight') return;
     
     setSelectedFieldId(null);
     const pageElement = e.currentTarget as HTMLDivElement;
@@ -970,8 +974,16 @@ export default function App() {
     let y = Math.min(drawing.startY, drawing.currentY);
     
     if (width < 5 || height < 5) {
-      width = activeTool === 'Text Field' ? 150 : 120;
-      height = activeTool === 'Text Field' ? 30 : 50;
+      if (activeTool === 'Text Field' || activeTool === 'Add Text') {
+        width = 160;
+        height = 36;
+      } else if (activeTool === 'Highlight') {
+        width = 120;
+        height = 24;
+      } else {
+        width = 120;
+        height = 50;
+      }
     }
     
     if (width > 5 && height > 5) {
@@ -986,8 +998,8 @@ export default function App() {
           name: defaultName,
         }]);
         setSelectedFieldId(newId);
-      } else if (activeTool === 'Text Field') {
-        const defaultName = `TextField${fields.filter(f => f.type === 'text').length + 1}`;
+      } else if (activeTool === 'Text Field' || activeTool === 'Add Text') {
+        const defaultName = `Văn bản ${fields.filter(f => f.type === 'text').length + 1}`;
         setFields([...fields, {
           id: newId,
           pageIndex: drawing.pageIndex,
@@ -995,7 +1007,21 @@ export default function App() {
           type: 'text',
           name: defaultName,
           textValue: '',
-          fontSize: 12,
+          fontSize: 14,
+          fontFamily: 'sans-serif',
+          color: '#000000',
+        }]);
+        setSelectedFieldId(newId);
+      } else if (activeTool === 'Highlight') {
+        const defaultName = `Highlight_${fields.filter(f => f.type === 'highlight').length + 1}`;
+        setFields([...fields, {
+          id: newId,
+          pageIndex: drawing.pageIndex,
+          x, y, width, height,
+          type: 'highlight',
+          name: defaultName,
+          highlightColor: '#FFFF00',
+          opacity: 0.35,
         }]);
         setSelectedFieldId(newId);
       }
@@ -1270,31 +1296,57 @@ export default function App() {
             hasSig = true;
           } else if (f.type === 'text') {
             try {
-              // Remove existing text field with same ID/name to allow overwriting
-              try {
-                const existingField = form.getField(f.id);
-                if (existingField) {
-                  form.removeField(existingField);
-                }
-              } catch (e) {
-                // Ignore if field doesn't exist
-              }
+              const isSerif = f.fontFamily === 'serif';
+              const fontToUse = await getEmbeddedFont(undefined, isSerif, false, false);
+              const sizeToUse = f.fontSize || 12;
+              const colorToUse = hexToRgb(f.color || '#000000');
 
-              const textField = form.createTextField(f.id);
-              textField.setText(f.textValue || '');
-              
-              textField.addToPage(page, {
+              if (f.textValue && f.textValue.trim()) {
+                const lines = f.textValue.split('\n');
+                lines.forEach((lineText, lineIdx) => {
+                  page.drawText(lineText, {
+                    x: fieldX + 2,
+                    y: fieldY + fieldHeight - (sizeToUse * 1.05) - (lineIdx * sizeToUse * 1.2),
+                    size: sizeToUse,
+                    font: fontToUse,
+                    color: colorToUse,
+                  });
+                });
+              } else {
+                try {
+                  const existingField = form.getField(f.id);
+                  if (existingField) {
+                    form.removeField(existingField);
+                  }
+                } catch (e) {}
+
+                const textField = form.createTextField(f.id);
+                textField.setText(f.name);
+                textField.addToPage(page, {
+                  x: fieldX,
+                  y: fieldY,
+                  width: fieldWidth,
+                  height: fieldHeight,
+                });
+                textField.setFontSize(sizeToUse);
+              }
+            } catch (err) {
+              console.error("Error creating text field:", err);
+            }
+          } else if (f.type === 'highlight') {
+            try {
+              const highlightColor = hexToRgb(f.highlightColor || '#FFFF00');
+              const opacity = f.opacity !== undefined ? f.opacity : 0.35;
+              page.drawRectangle({
                 x: fieldX,
                 y: fieldY,
                 width: fieldWidth,
                 height: fieldHeight,
+                color: highlightColor,
+                opacity: opacity,
               });
-              
-              if (f.fontSize) {
-                textField.setFontSize(f.fontSize);
-              }
             } catch (err) {
-              console.error("Error creating text field:", err);
+              console.error("Error creating highlight rectangle:", err);
             }
           }
         }
@@ -1936,7 +1988,7 @@ export default function App() {
                     className={`px-4 py-3 flex-1 min-w-[120px] text-center border-b-2 transition-all flex items-center justify-center gap-1.5 ${activeHelpTab === 'fields' ? 'border-indigo-600 text-indigo-700 bg-white' : 'border-transparent text-gray-600 hover:text-gray-900 hover:bg-gray-100/50'}`}
                  >
                     <PenSquare className="w-4 h-4" />
-                    <span>Tạo vùng ký & Văn bản</span>
+                    <span>Vùng ký, Thêm chữ & Highlight</span>
                  </button>
                  <button 
                     onClick={() => setActiveHelpTab('edit_text')}
@@ -1996,29 +2048,6 @@ export default function App() {
                     <div className="flex flex-col gap-4">
                        <h4 className="text-base font-bold text-gray-800 flex items-center gap-2">
                           <span className="w-1.5 h-6 bg-indigo-600 rounded-full" />
-                          Thiết lập vùng ký số và trường nhập liệu
-                       </h4>
-                       <p>Chức năng này giúp bạn thiết lập sẵn các vị trí ký số hoặc các ô văn bản tương tác trước khi ký hoặc ban hành văn bản.</p>
-                       <ul className="space-y-3 pl-1">
-                          <li className="flex items-start gap-2">
-                             <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">1</div>
-                             <div>
-                                <strong className="text-gray-800">Tạo trường vùng ký số chuẩn:</strong> Chọn công cụ <span className="inline-flex items-center gap-0.5 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-300 font-medium text-xs text-gray-700"><PenSquare className="w-3.5 h-3.5 text-indigo-600" /> Trường chữ ký</span> trên thanh công cụ. Click chuột và kéo vẽ một khung hình chữ nhật tại nơi cần ký trên PDF. Bạn có thể kéo liên tục nhiều vùng ký trên nhiều trang.
-                             </div>
-                          </li>
-                          <li className="flex items-start gap-2">
-                             <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">2</div>
-                             <div>
-                                <strong className="text-gray-800">Tạo trường văn bản:</strong> Chọn công cụ <span className="inline-flex items-center gap-0.5 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-300 font-medium text-xs text-gray-700"><Type className="w-3.5 h-3.5 text-blue-600" /> Trường văn bản</span> để kéo vẽ các vùng nhập liệu văn bản tương tác trực tiếp.
-                             </div>
-                          </li>
-                          <li className="flex items-start gap-2">
-                             <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">3</div>
-                             <div>
-                                <strong className="text-gray-800">Đặt tên định danh cho vùng ký/trường văn bản:</strong> Click đúp hoặc nhấn vào tên chữ trên vùng vừa vẽ để đổi tên trực tiếp, hoặc chọn vùng đó rồi đổi tên ở <span className="font-semibold text-gray-800">Bảng thuộc tính phía bên phải</span> (ví dụ: đặt tên là <i>"ChuKyGiamDoc"</i>, <i>"NguoiKy1"</i>). Tên này sẽ lưu trữ chuẩn cấu trúc AcroForm của tài liệu PDF.
-                             </div>
-                          </li>
-                          <li className="flex items-start gap-2">
                              <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">4</div>
                              <div>
                                 <strong className="text-gray-800">Điều chỉnh kích thước & Di chuyển:</strong> Chuyển về công cụ <span className="inline-flex items-center gap-0.5 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-300 font-medium text-xs text-gray-700"><MousePointer2 className="w-3.5 h-3.5 text-gray-700" /> Chọn</span> để kéo di chuyển các vùng ký hoặc thay đổi kích thước của chúng (bằng cách kéo các góc và cạnh màu đỏ/xanh). Nhấn phím <kbd className="bg-gray-100 px-1 py-0.5 border border-gray-300 rounded font-mono text-xs">Delete</kbd> để xóa nhanh một vùng đang chọn.
@@ -2183,9 +2212,15 @@ export default function App() {
            />
            <RibbonButton 
               icon={Type} 
-              label={"Trường\nvăn bản"} 
-              active={activeTool === 'Text Field'} 
-              onClick={() => setActiveTool('Text Field')}
+              label={"Thêm\nchữ"} 
+              active={activeTool === 'Add Text' || activeTool === 'Text Field'} 
+              onClick={() => setActiveTool('Add Text')}
+           />
+           <RibbonButton 
+              icon={Highlighter} 
+              label={"Highlight\nPDF"} 
+              active={activeTool === 'Highlight'} 
+              onClick={() => setActiveTool('Highlight')}
            />
            <RibbonButton 
               icon={Edit} 
@@ -2272,11 +2307,14 @@ export default function App() {
       {/* Horizontal Split Layout: Scrollable Canvas on the Left, Style Panel on the Right */}
       <div className="flex-1 flex flex-row overflow-hidden relative">
         {/* Floating Indicator for Continuous Mode */}
-        {(activeTool === 'Signature Field' || activeTool === 'Text Field') && (
+        {(activeTool === 'Signature Field' || activeTool === 'Text Field' || activeTool === 'Add Text' || activeTool === 'Highlight') && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-indigo-900/95 text-white px-4 py-2.5 rounded-full shadow-lg flex items-center gap-2.5 text-xs font-semibold backdrop-blur-md border border-indigo-500/30 animate-bounce z-50">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             <span>
-              Đang ở chế độ tạo liên tục {activeTool === 'Signature Field' ? 'trường chữ ký' : 'trường văn bản'} (Nhấn <kbd className="bg-indigo-700 px-1.5 py-0.5 rounded text-[10px] border border-indigo-500 font-mono">ESC</kbd> hoặc nút <b>Chọn</b> để thoát)
+              Đang ở chế độ tạo liên tục {
+                activeTool === 'Signature Field' ? 'trường chữ ký' :
+                activeTool === 'Highlight' ? 'vùng highlight' : 'chữ mới'
+              } (Nhấn <kbd className="bg-indigo-700 px-1.5 py-0.5 rounded text-[10px] border border-indigo-500 font-mono">ESC</kbd> hoặc nút <b>Chọn</b> để thoát)
             </span>
           </div>
         )}
@@ -2487,23 +2525,33 @@ export default function App() {
      return fields.filter(f => f.pageIndex === pageIndex).map(f => {
          const isSelected = f.id === selectedFieldId;
          const isText = f.type === 'text';
+         const isHighlight = f.type === 'highlight';
          
-         const bgClass = isText 
-           ? 'bg-blue-50/90 border-blue-500 hover:bg-blue-100/90' 
-           : 'bg-indigo-50/90 border-indigo-500 hover:bg-indigo-100/90';
+         const bgClass = isHighlight
+           ? ''
+           : (isText 
+               ? 'bg-blue-50/90 border-blue-500 hover:bg-blue-100/90' 
+               : 'bg-indigo-50/90 border-indigo-500 hover:bg-indigo-100/90');
            
-         const borderClass = isSelected 
-           ? (isText ? 'border-2 border-blue-600 z-50 shadow-md' : 'border-2 border-indigo-600 z-50 shadow-md') 
-           : (isText ? 'border border-dashed border-blue-400 hover:border-blue-600' : 'border border-dashed border-indigo-400 hover:border-indigo-600');
+         const borderClass = isHighlight
+           ? (isSelected ? 'border-2 border-amber-600 z-50 shadow-md' : 'border border-dashed border-amber-500 hover:border-amber-600')
+           : (isSelected 
+               ? (isText ? 'border-2 border-blue-600 z-50 shadow-md' : 'border-2 border-indigo-600 z-50 shadow-md') 
+               : (isText ? 'border border-dashed border-blue-400 hover:border-blue-600' : 'border border-dashed border-indigo-400 hover:border-indigo-600'));
            
-         const activeColorClass = isText ? 'bg-blue-600' : 'bg-indigo-600';
-         const focusRingClass = isText ? 'focus:border-blue-500 focus:ring-blue-500' : 'focus:border-indigo-500 focus:ring-indigo-500';
+         const activeColorClass = isHighlight ? 'bg-amber-500' : (isText ? 'bg-blue-600' : 'bg-indigo-600');
+         const focusRingClass = isHighlight ? 'focus:border-amber-500 focus:ring-amber-500' : (isText ? 'focus:border-blue-500 focus:ring-blue-500' : 'focus:border-indigo-500 focus:ring-indigo-500');
+
+         const highlightBgStyle = isHighlight ? {
+           backgroundColor: f.highlightColor || '#FFFF00',
+           opacity: f.opacity !== undefined ? f.opacity : 0.35,
+         } : {};
 
          return (
          <div 
            key={f.id}
            className={`absolute group ${borderClass} ${bgClass} ${activeTool === 'Select' ? 'cursor-move' : 'cursor-pointer'} rounded transition-all duration-150`}
-           style={{ left: f.x, top: f.y, width: f.width, height: f.height }}
+           style={{ left: f.x, top: f.y, width: f.width, height: f.height, ...highlightBgStyle }}
            onMouseDown={(e) => {
               e.stopPropagation();
               setSelectedFieldId(f.id);
@@ -2530,24 +2578,46 @@ export default function App() {
          >
              {/* Content Icon & Text */}
              <div className={`absolute inset-0 flex flex-col items-center justify-center p-1 text-center gap-0.5 ${isSelected ? '' : 'pointer-events-none select-none'}`}>
-                 {isText ? (
+                 {isHighlight ? (
+                     <div className="flex items-center gap-1">
+                         <Highlighter className="w-3.5 h-3.5 text-amber-800 pointer-events-none drop-shadow-xs" />
+                         {isSelected && (
+                             <span className="text-[9px] font-bold text-amber-900 leading-none truncate max-w-full">
+                                 {f.name}
+                             </span>
+                         )}
+                     </div>
+                 ) : isText ? (
                      <>
                          <Type className="w-4 h-4 text-blue-600 pointer-events-none" />
                          {isSelected ? (
                              <input 
                                  type="text" 
-                                 value={f.name} 
+                                 value={f.textValue || f.name} 
+                                 placeholder="Nhập nội dung..."
                                  autoFocus
                                  onFocus={(e) => e.target.select()}
                                  onChange={(e) => {
-                                   setFields(fields.map(field => field.id === f.id ? { ...field, name: e.target.value } : field));
+                                   setFields(fields.map(field => field.id === f.id ? { ...field, textValue: e.target.value } : field));
                                  }}
                                  onMouseDown={(e) => e.stopPropagation()}
                                  onClick={(e) => e.stopPropagation()}
-                                 className="text-[10px] font-bold text-blue-700 text-center bg-white border border-blue-300 rounded px-1 py-0.5 w-full outline-none focus:ring-1 focus:ring-blue-500 font-sans"
+                                 style={{
+                                   fontFamily: getFontFamily(f.fontFamily || 'sans-serif'),
+                                   color: f.color || '#000000',
+                                   fontSize: f.fontSize ? `${Math.min(f.fontSize, 18)}px` : '12px'
+                                 }}
+                                 className="font-bold text-center bg-white/90 border border-blue-300 rounded px-1 py-0.5 w-full outline-none focus:ring-1 focus:ring-blue-500"
                              />
                          ) : (
-                             <span className="text-[10px] font-bold text-blue-700 leading-none truncate max-w-full">
+                             <span 
+                               style={{
+                                 fontFamily: getFontFamily(f.fontFamily || 'sans-serif'),
+                                 color: f.color || '#000000',
+                                 fontSize: f.fontSize ? `${Math.min(f.fontSize, 16)}px` : '12px'
+                               }}
+                               className="font-bold leading-none truncate max-w-full"
+                             >
                                  {f.textValue || f.name}
                              </span>
                          )}
@@ -2595,21 +2665,21 @@ export default function App() {
              <button 
                onClick={(e) => { e.stopPropagation(); deleteField(f.id); }}
                className="absolute -top-2 -right-2 bg-white text-red-600 border border-red-200 rounded-full w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-50 hover:text-red-700 cursor-pointer shadow z-20 transition-all duration-150"
-               title={isText ? "Xóa trường văn bản" : "Xóa trường chữ ký"}
+               title={isHighlight ? "Xóa highlight" : (isText ? "Xóa văn bản" : "Xóa trường chữ ký")}
              >
                  <X className="w-3 h-3 stroke-[2.5]" />
              </button>
              
              {/* Properties Popup Wrapper */}
              {isSelected && activeTool === 'Select' && (
-                 <div className="absolute left-0 top-[calc(100%+4px)] bg-white border border-gray-200 rounded-md p-2.5 shadow-lg z-50 text-[11px] font-sans text-gray-800 cursor-default w-[220px]"
+                 <div className="absolute left-0 top-[calc(100%+4px)] bg-white border border-gray-200 rounded-md p-2.5 shadow-lg z-50 text-[11px] font-sans text-gray-800 cursor-default w-[230px]"
                   onMouseDown={(e) => e.stopPropagation()}
                  >
                      <div className="flex flex-col gap-2">
-                         {isText ? (
+                         {isHighlight ? (
                              <>
                                  <div className="flex flex-col gap-1">
-                                     <span className="font-semibold text-gray-700">Tên trường văn bản:</span>
+                                     <span className="font-semibold text-gray-700">Tên vùng Highlight:</span>
                                      <input 
                                         type="text" 
                                         value={f.name} 
@@ -2620,7 +2690,50 @@ export default function App() {
                                      />
                                  </div>
                                  <div className="flex flex-col gap-1">
-                                     <span className="font-semibold text-gray-700">Nội dung chữ hiển thị:</span>
+                                     <span className="font-semibold text-gray-700">Màu tô sáng (Highlight):</span>
+                                     <div className="flex items-center gap-1.5">
+                                         {['#FFFF00', '#00FF00', '#FF69B4', '#00BFFF', '#FFA500'].map(c => (
+                                             <button
+                                                 key={c}
+                                                 type="button"
+                                                 onClick={() => setFields(fields.map(field => field.id === f.id ? { ...field, highlightColor: c } : field))}
+                                                 className="w-5 h-5 rounded-full border border-gray-300 shadow-xs cursor-pointer flex items-center justify-center transition-transform hover:scale-110"
+                                                 style={{ backgroundColor: c }}
+                                             >
+                                                 {(f.highlightColor || '#FFFF00') === c && <span className="w-1.5 h-1.5 bg-black/60 rounded-full" />}
+                                             </button>
+                                         ))}
+                                         <input 
+                                             type="color"
+                                             value={f.highlightColor || '#FFFF00'}
+                                             onChange={(e) => setFields(fields.map(field => field.id === f.id ? { ...field, highlightColor: e.target.value } : field))}
+                                             className="w-5 h-5 rounded border border-gray-300 cursor-pointer p-0 bg-transparent ml-auto"
+                                         />
+                                     </div>
+                                 </div>
+                                 <div className="flex flex-col gap-1">
+                                     <div className="flex justify-between items-center">
+                                         <span className="font-semibold text-gray-700">Độ mờ (Opacity):</span>
+                                         <span className="font-mono text-gray-600">{Math.round((f.opacity !== undefined ? f.opacity : 0.35) * 100)}%</span>
+                                     </div>
+                                     <input 
+                                         type="range"
+                                         min={0.1}
+                                         max={0.9}
+                                         step={0.05}
+                                         value={f.opacity !== undefined ? f.opacity : 0.35}
+                                         onChange={(e) => {
+                                           const op = parseFloat(e.target.value);
+                                           setFields(fields.map(field => field.id === f.id ? { ...field, opacity: op } : field));
+                                         }}
+                                         className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                                     />
+                                 </div>
+                             </>
+                         ) : isText ? (
+                             <>
+                                 <div className="flex flex-col gap-1">
+                                     <span className="font-semibold text-gray-700">Nội dung chữ:</span>
                                      <textarea 
                                         value={f.textValue || ''} 
                                         placeholder="Nhập nội dung văn bản..."
@@ -2631,19 +2744,60 @@ export default function App() {
                                         className={`w-full border border-gray-300 rounded px-2 py-1 outline-none bg-white ${focusRingClass} resize-none`}
                                      />
                                  </div>
-                                 <div className="flex gap-2">
+                                 <div className="flex flex-col gap-1">
+                                     <span className="font-semibold text-gray-700">Phông chữ:</span>
+                                     <select
+                                        value={f.fontFamily || 'sans-serif'}
+                                        onChange={(e) => {
+                                          setFields(fields.map(field => field.id === f.id ? { ...field, fontFamily: e.target.value } : field));
+                                        }}
+                                        className={`w-full border border-gray-300 rounded px-2 py-1 outline-none bg-white ${focusRingClass} text-[11px] font-medium`}
+                                     >
+                                        <option value="sans-serif">Arial (Không chân)</option>
+                                        <option value="serif">Times New Roman (Có chân)</option>
+                                        <option value="monospace">Courier New (Mã máy)</option>
+                                     </select>
+                                 </div>
+                                 <div className="flex gap-2 items-end">
                                      <div className="flex-1 flex flex-col gap-1">
                                          <span className="font-semibold text-gray-700">Cỡ chữ (px):</span>
                                          <input 
                                             type="number" 
-                                            value={f.fontSize || 12} 
+                                            value={f.fontSize || 14} 
+                                            min={6}
+                                            max={120}
                                             onChange={(e) => {
-                                              const size = parseInt(e.target.value) || 12;
+                                              const size = parseInt(e.target.value) || 14;
                                               setFields(fields.map(field => field.id === f.id ? { ...field, fontSize: size } : field));
                                             }}
                                             className={`w-full border border-gray-300 rounded px-2 py-1 outline-none bg-white ${focusRingClass}`}
                                          />
                                      </div>
+                                     <div className="flex flex-col gap-1">
+                                         <span className="font-semibold text-gray-700">Màu chữ:</span>
+                                         <div className="flex items-center gap-1">
+                                             <input 
+                                                 type="color"
+                                                 value={f.color || '#000000'}
+                                                 onChange={(e) => setFields(fields.map(field => field.id === f.id ? { ...field, color: e.target.value } : field))}
+                                                 className="w-6 h-6 rounded border border-gray-300 cursor-pointer p-0 bg-transparent"
+                                             />
+                                         </div>
+                                     </div>
+                                 </div>
+                                 <div className="flex items-center gap-1.5 pt-1">
+                                     <span className="text-[10px] text-gray-500">Màu nhanh:</span>
+                                     {['#000000', '#FF0000', '#0000FF', '#008000', '#800080'].map(c => (
+                                         <button
+                                             key={c}
+                                             type="button"
+                                             onClick={() => setFields(fields.map(field => field.id === f.id ? { ...field, color: c } : field))}
+                                             className="w-4 h-4 rounded-full border border-gray-300 shadow-xs cursor-pointer flex items-center justify-center transition-transform hover:scale-110"
+                                             style={{ backgroundColor: c }}
+                                         >
+                                             {(f.color || '#000000') === c && <span className="w-1 h-1 bg-white rounded-full" />}
+                                         </button>
+                                     ))}
                                  </div>
                              </>
                          ) : (
@@ -2668,10 +2822,12 @@ export default function App() {
 
   function renderDrawingBox(pageIndex: number) {
     if (!drawing || drawing.pageIndex !== pageIndex) return null;
-    const isText = activeTool === 'Text Field';
-    const borderClass = isText ? 'border-blue-600 bg-blue-50' : 'border-indigo-600 bg-indigo-50';
-    const labelBg = isText ? 'bg-blue-600' : 'bg-indigo-600';
-    const label = isText ? 'Trường văn bản' : 'Trường chữ ký';
+    const isText = activeTool === 'Text Field' || activeTool === 'Add Text';
+    const isHighlight = activeTool === 'Highlight';
+
+    const borderClass = isHighlight ? 'border-amber-500 bg-amber-200/50' : (isText ? 'border-blue-600 bg-blue-50' : 'border-indigo-600 bg-indigo-50');
+    const labelBg = isHighlight ? 'bg-amber-500' : (isText ? 'bg-blue-600' : 'bg-indigo-600');
+    const label = isHighlight ? 'Tô sáng' : (isText ? 'Thêm chữ' : 'Trường chữ ký');
     return (
       <div
         className={`absolute border border-dashed bg-opacity-40 ${borderClass}`}
@@ -2682,7 +2838,7 @@ export default function App() {
           height: Math.abs(drawing.currentY - drawing.startY)
         }}
       >
-        <div className={`absolute top-0 left-0 ${labelBg} text-white text-[10px] px-1.5 py-0.5 whitespace-nowrap transform -translate-y-[calc(100%+1px)] -translate-x-[1px] leading-none rounded-t`}>
+        <div className={`absolute top-0 left-0 ${labelBg} text-white text-[10px] px-1.5 py-0.5 whitespace-nowrap transform -translate-y-[calc(100%+1px)] -translate-x-[1px] leading-none rounded-t font-semibold`}>
           {label}
         </div>
       </div>
