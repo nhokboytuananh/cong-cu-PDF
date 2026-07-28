@@ -765,22 +765,6 @@ export default function App() {
       setIsProcessing(false);
     }
   };
-          cleanedPagesCount++;
-        }
-      }
-
-      setPages(updatedPages);
-      setFields(fields.filter(f => f.type !== 'highlight'));
-
-      alert(`Đã tẩy sạch thành công toàn bộ vệt Highlight (bao gồm cả vệt vẽ đè vào ảnh/nội dung) trên tài liệu!`);
-
-    } catch (err) {
-      console.error("Error removing native highlights:", err);
-      alert("Lỗi khi xử lý xóa Highlight: " + (err as Error).message);
-    } finally {
-      setIsProcessing(false);
-    }
-  };
 
 
   const handleInsertPageBefore = async (e: React.ChangeEvent<HTMLInputElement>) => {
