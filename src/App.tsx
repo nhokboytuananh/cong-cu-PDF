@@ -714,10 +714,13 @@ export default function App() {
     }
   };
   const removeNativeHighlights = async () => {
-    if (!pdfBytes) return;
+    if (!originalPdfBuffer) {
+      alert("Vui lòng tải một file PDF trước.");
+      return;
+    }
     try {
       setIsProcessing(true);
-      const pdfDoc = await PDFDocument.load(pdfBytes);
+      const pdfDoc = await PDFDocument.load(originalPdfBuffer, { ignoreEncryption: true });
       const pages = pdfDoc.getPages();
       let removedCount = 0;
 
@@ -747,8 +750,9 @@ export default function App() {
       });
 
       const updatedPdfBytes = await pdfDoc.save();
-      setPdfBytes(updatedPdfBytes);
-      await loadPDF(updatedPdfBytes);
+      setOriginalPdfBuffer(updatedPdfBytes);
+      setFields(fields.filter(f => f.type !== 'highlight'));
+      await renderPdfPages(updatedPdfBytes);
       if (removedCount > 0) {
         alert(`Đã xóa thành công ${removedCount} chú thích Highlight gốc trong tệp PDF!`);
       } else {
@@ -3118,10 +3122,12 @@ export default function App() {
 
         {/* Bold */}
         <button
+          type="button"
           tabIndex={-1}
-          onClick={() => handlePropChange({ isBold: !t.isBold })}
+          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handlePropChange({ isBold: !t.isBold }); }}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); handlePropChange({ isBold: !t.isBold }); }}
           className={`p-1 rounded transition-colors ${
-            t.isBold ? 'bg-indigo-100 text-indigo-700 font-bold' : 'hover:bg-gray-100 text-gray-600'
+            t.isBold ? 'bg-indigo-600 text-white font-bold shadow-xs' : 'hover:bg-gray-100 text-gray-700'
           }`}
           title="In đậm (Bold)"
         >
@@ -3130,10 +3136,12 @@ export default function App() {
 
         {/* Italic */}
         <button
+          type="button"
           tabIndex={-1}
-          onClick={() => handlePropChange({ isItalic: !t.isItalic })}
+          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handlePropChange({ isItalic: !t.isItalic }); }}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); handlePropChange({ isItalic: !t.isItalic }); }}
           className={`p-1 rounded transition-colors ${
-            t.isItalic ? 'bg-indigo-100 text-indigo-700 italic' : 'hover:bg-gray-100 text-gray-600'
+            t.isItalic ? 'bg-indigo-600 text-white italic shadow-xs' : 'hover:bg-gray-100 text-gray-700'
           }`}
           title="In nghiêng (Italic)"
         >
