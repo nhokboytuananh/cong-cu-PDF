@@ -439,6 +439,7 @@ export default function App() {
     const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
     const parsedPages: PdfPage[] = [];
     const extractedTexts: PdfTextItem[] = [];
+    const extractedFields: Field[] = [];
 
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
@@ -505,7 +506,7 @@ export default function App() {
             pdfHeight: fontSize,
             // default custom styles
             // Ưu tiên tin cậy tên font gốc trong PDF (pdfInternalFontName) trước để tránh PDF.js giải mã sai sang sans-serif
-            customFontFamily: getIsSerif(pdfInternalFontName || resolvedFontName || 'serif') ? 'serif' : 'sans-serif',
+            customFontFamily: 'serif', // Mặc định nhận dạng thành Times New Roman
             customFontSize: fontSize,
             isBold: resolvedFontName.toLowerCase().includes('bold') || pdfInternalFontName.toLowerCase().includes('bold') || false,
             isItalic: resolvedFontName.toLowerCase().includes('italic') || resolvedFontName.toLowerCase().includes('oblique') || 
@@ -519,9 +520,84 @@ export default function App() {
       } catch (err) {
         console.error(`Error extracting text content at page ${i}:`, err);
       }
+
+      try {
+        const annotations = await page.getAnnotations();
+        let hCount = 0;
+        annotations.forEach((annot: any) => {
+          const subtype = annot.subtype || (annot.annotationType === 9 ? 'Highlight' : '');
+          if (subtype === 'Highlight' || subtype === 'Underline' || subtype === 'Square') {
+              // Highlight annotation
+            } else if (subtype === 'FreeText' || subtype === 'Tx' || annot.fieldType === 'Tx') {
+              if (annot.rect && annot.rect.length === 4) {
+                const [x1, y1, x2, y2] = annot.rect;
+                const rectInVP = viewport.convertToViewportRectangle([x1, y1, x2, y2]);
+                const vx = Math.min(rectInVP[0], rectInVP[2]);
+                const vy = Math.min(rectInVP[1], rectInVP[3]);
+                const vw = Math.abs(rectInVP[2] - rectInVP[0]);
+                const vh = Math.abs(rectInVP[3] - rectInVP[1]);
+
+                extractedFields.push({
+                  id: `native-text-${i - 1}-${hCount}`,
+                  pageIndex: i - 1,
+                  x: vx,
+                  y: vy,
+                  width: vw || 120,
+                  height: vh || 24,
+                  type: 'text',
+                  name: `Văn bản gốc ${hCount + 1}`,
+                  textValue: annot.contents || annot.fieldValue || '',
+                  fontSize: 14,
+                  fontFamily: 'sans-serif',
+                  color: '#000000',
+                  isNativeAnnot: true,
+                  nativeAnnotIndex: hCount,
+                });
+                hCount++;
+              }
+            }
+            if (subtype === 'Highlight' || subtype === 'Underline' || subtype === 'Square') {
+            if (annot.rect && annot.rect.length === 4) {
+              const [x1, y1, x2, y2] = annot.rect;
+              const rectInVP = viewport.convertToViewportRectangle([x1, y1, x2, y2]);
+              const vx = Math.min(rectInVP[0], rectInVP[2]);
+              const vy = Math.min(rectInVP[1], rectInVP[3]);
+              const vw = Math.abs(rectInVP[2] - rectInVP[0]);
+              const vh = Math.abs(rectInVP[3] - rectInVP[1]);
+
+              let colorHex = '#FFFF00';
+              if (annot.color && annot.color.length >= 3) {
+                const r = Math.round(annot.color[0] <= 1 ? annot.color[0] * 255 : annot.color[0]).toString(16).padStart(2, '0');
+                const g = Math.round(annot.color[1] <= 1 ? annot.color[1] * 255 : annot.color[1]).toString(16).padStart(2, '0');
+                const b = Math.round(annot.color[2] <= 1 ? annot.color[2] * 255 : annot.color[2]).toString(16).padStart(2, '0');
+                colorHex = `#${r}${g}${b}`;
+              }
+
+              extractedFields.push({
+                id: `native-annot-${i - 1}-${hCount}`,
+                pageIndex: i - 1,
+                x: vx,
+                y: vy,
+                width: vw || 80,
+                height: vh || 18,
+                type: 'highlight',
+                name: `Highlight gốc ${hCount + 1}`,
+                highlightColor: colorHex,
+                opacity: 0.55,
+                isNativeAnnot: true,
+                nativeAnnotIndex: hCount,
+              });
+              hCount++;
+            }
+          }
+        });
+      } catch (aErr) {
+        console.warn(`Error extracting annotations at page ${i}:`, aErr);
+      }
     }
     setPages(parsedPages);
     setPdfTexts(extractedTexts);
+    setFields(extractedFields);
     setSelectedPageIndices([]);
     // Trích xuất font gốc từ PDF để nhúng lại chính xác khi export
     extractFontsFromPdf(buffer).then(cache => {
@@ -637,6 +713,55 @@ export default function App() {
       setIsProcessing(false);
     }
   };
+  const removeNativeHighlights = async () => {
+    if (!pdfBytes) return;
+    try {
+      setIsProcessing(true);
+      const pdfDoc = await PDFDocument.load(pdfBytes);
+      const pages = pdfDoc.getPages();
+      let removedCount = 0;
+
+      pages.forEach(page => {
+        const annots = page.node.get(pdfLib.PDFName.of('Annots'));
+        if (annots instanceof pdfLib.PDFArray) {
+          const remainingAnnots = pdfLib.PDFArray.withContext(pdfDoc.context);
+          for (let i = 0; i < annots.size(); i++) {
+            const annotRef = annots.get(i);
+            const annotDict = pdfDoc.context.lookup(annotRef);
+            if (annotDict instanceof pdfLib.PDFDict) {
+              const subtype = annotDict.get(pdfLib.PDFName.of('Subtype'));
+              if (subtype && (
+                subtype.toString() === '/Highlight' || 
+                subtype.toString() === '/Underline' || 
+                subtype.toString() === '/StrikeOut' ||
+                subtype.toString() === '/Square'
+              )) {
+                removedCount++;
+                continue;
+              }
+            }
+            remainingAnnots.push(annotRef);
+          }
+          page.node.set(pdfLib.PDFName.of('Annots'), remainingAnnots);
+        }
+      });
+
+      const updatedPdfBytes = await pdfDoc.save();
+      setPdfBytes(updatedPdfBytes);
+      await loadPDF(updatedPdfBytes);
+      if (removedCount > 0) {
+        alert(`Đã xóa thành công ${removedCount} chú thích Highlight gốc trong tệp PDF!`);
+      } else {
+        alert("Không tìm thấy chú thích Highlight dạng Annotation trong file. Nếu tệp PDF của bạn có vệt highlight được vẽ trực tiếp vào nền ảnh/nội dung trang, bạn có thể bật công cụ 'Sửa chữ gốc' và kéo ô xóa nền trắng (Whiteout) để phủ sạch vệt mờ.");
+      }
+    } catch (err) {
+      console.error("Error removing native highlights:", err);
+      alert("Lỗi khi xử lý xóa Highlight gốc: " + (err as Error).message);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
 
   const handleInsertPageBefore = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1297,20 +1422,31 @@ export default function App() {
           } else if (f.type === 'text') {
             try {
               const isSerif = f.fontFamily === 'serif';
-              const fontToUse = await getEmbeddedFont(undefined, isSerif, false, false);
+              const fontToUse = await getEmbeddedFont(undefined, isSerif, !!f.isBold, !!f.isItalic);
               const sizeToUse = f.fontSize || 12;
               const colorToUse = hexToRgb(f.color || '#000000');
 
               if (f.textValue && f.textValue.trim()) {
                 const lines = f.textValue.split('\n');
                 lines.forEach((lineText, lineIdx) => {
+                  const lineY = fieldY + fieldHeight - (sizeToUse * 1.05) - (lineIdx * sizeToUse * 1.2);
                   page.drawText(lineText, {
                     x: fieldX + 2,
-                    y: fieldY + fieldHeight - (sizeToUse * 1.05) - (lineIdx * sizeToUse * 1.2),
+                    y: lineY,
                     size: sizeToUse,
                     font: fontToUse,
                     color: colorToUse,
                   });
+
+                  if (f.isUnderline && lineText.trim()) {
+                    const textWidth = fontToUse.widthOfTextAtSize(lineText, sizeToUse);
+                    page.drawLine({
+                      start: { x: fieldX + 2, y: lineY - 2 },
+                      end: { x: fieldX + 2 + textWidth, y: lineY - 2 },
+                      thickness: Math.max(1, sizeToUse * 0.07),
+                      color: colorToUse,
+                    });
+                  }
                 });
               } else {
                 try {
@@ -1344,6 +1480,7 @@ export default function App() {
                 height: fieldHeight,
                 color: highlightColor,
                 opacity: opacity,
+                blendMode: pdfLib.BlendMode.Multiply,
               });
             } catch (err) {
               console.error("Error creating highlight rectangle:", err);
@@ -1459,24 +1596,37 @@ export default function App() {
                     Tự động
                   </button>
                   <button
+                    onClick={() => handleTextPropChange(item.id, { customFontFamily: 'serif', isModified: true })}
+                    className={`flex-1 py-1 border rounded text-center transition-all cursor-pointer text-[10px] ${
+                      (!item.customFontFamily || item.customFontFamily === 'serif')
+                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700 font-bold shadow-xs'
+                        : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                    }`}
+                    title="Phông Times New Roman (Mặc định)"
+                  >
+                    Times New Roman (Có chân)
+                  </button>
+                  <button
                     onClick={() => handleTextPropChange(item.id, { customFontFamily: 'sans-serif', isModified: true })}
                     className={`flex-1 py-1 border rounded text-center transition-all cursor-pointer text-[10px] ${
                       item.customFontFamily === 'sans-serif'
-                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700 font-bold'
+                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700 font-bold shadow-xs'
                         : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
                     }`}
+                    title="Phông Arial (Không chân)"
                   >
-                    Không chân
+                    Arial (Không chân)
                   </button>
                   <button
-                    onClick={() => handleTextPropChange(item.id, { customFontFamily: 'serif', isModified: true })}
+                    onClick={() => handleTextPropChange(item.id, { customFontFamily: 'monospace', isModified: true })}
                     className={`flex-1 py-1 border rounded text-center transition-all cursor-pointer text-[10px] ${
-                      item.customFontFamily === 'serif'
-                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700 font-bold'
+                      item.customFontFamily === 'monospace'
+                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700 font-bold shadow-xs'
                         : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
                     }`}
+                    title="Phông Courier New"
                   >
-                    Có chân
+                    Courier New
                   </button>
                 </div>
               </div>
@@ -2254,7 +2404,39 @@ export default function App() {
            <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-gray-500 uppercase tracking-wider">Công cụ</div>
         </div>
         
-        {activeTool === 'Edit Text' && (
+        {activeTool === 'Highlight' && (
+            <>
+              <div className="w-px h-16 bg-gray-300" />
+              <div className="flex flex-col justify-center h-[68px] border border-amber-300/80 rounded-lg px-3 bg-amber-50/60 text-[11px] gap-1.5 shadow-inner relative overflow-hidden min-w-[240px]">
+                <div className="flex items-center gap-1.5 font-semibold text-amber-800">
+                  <Highlighter className="w-3.5 h-3.5 text-amber-600" />
+                  Công cụ Highlight PDF
+                </div>
+                <div className="flex items-center gap-2">
+                  <button 
+                    type="button"
+                    onClick={removeNativeHighlights}
+                    className="text-[10px] bg-amber-600 hover:bg-amber-700 text-white px-2.5 py-1 rounded font-semibold transition-colors cursor-pointer flex items-center gap-1 shadow-xs"
+                    title="Xóa tất cả chú thích Highlight dạng Annotation lưu trong file PDF gốc"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Xóa Highlight gốc trong file
+                  </button>
+                  {fields.some(f => f.type === 'highlight') && (
+                    <button 
+                      type="button"
+                      onClick={() => setFields(fields.filter(f => f.type !== 'highlight'))}
+                      className="text-[10px] bg-red-100 hover:bg-red-200 text-red-700 border border-red-300 px-2 py-1 rounded font-semibold transition-colors cursor-pointer"
+                    >
+                      Xóa ô vừa vẽ
+                    </button>
+                  )}
+                </div>
+              </div>
+            </>
+         )}
+
+         {activeTool === 'Edit Text' && (
            <>
              <div className="w-px h-16 bg-gray-300" />
              <div className="flex flex-col justify-center h-[68px] border border-orange-300/80 rounded-lg px-3 bg-orange-50/60 text-[11px] gap-1.5 shadow-inner relative overflow-hidden min-w-[200px]">
@@ -2615,7 +2797,10 @@ export default function App() {
                               style={{
                                 fontFamily: getFontFamily(f.fontFamily || 'sans-serif'),
                                 color: f.color || '#000000',
-                                fontSize: f.fontSize ? `${Math.min(f.fontSize, 20)}px` : '14px'
+                                fontSize: f.fontSize ? `${Math.min(f.fontSize, 20)}px` : '14px',
+                                fontWeight: f.isBold ? 'bold' : 'normal',
+                                fontStyle: f.isItalic ? 'italic' : 'normal',
+                                textDecoration: f.isUnderline ? 'underline' : 'none'
                               }}
                               className="font-semibold text-left bg-white/80 border border-blue-400 rounded p-1 w-full h-full outline-none focus:ring-1 focus:ring-blue-500 resize-none leading-normal"
                           />
@@ -2624,7 +2809,10 @@ export default function App() {
                             style={{
                               fontFamily: getFontFamily(f.fontFamily || 'sans-serif'),
                               color: f.color || '#000000',
-                              fontSize: f.fontSize ? `${Math.min(f.fontSize, 18)}px` : '14px'
+                              fontSize: f.fontSize ? `${Math.min(f.fontSize, 18)}px` : '14px',
+                              fontWeight: f.isBold ? 'bold' : 'normal',
+                              fontStyle: f.isItalic ? 'italic' : 'normal',
+                              textDecoration: f.isUnderline ? 'underline' : 'none'
                             }}
                             className={`font-semibold leading-normal truncate max-w-full w-full text-left p-0.5 ${!f.textValue ? 'text-gray-400 italic text-[11px]' : ''}`}
                           >
@@ -2687,17 +2875,7 @@ export default function App() {
                      <div className="flex flex-col gap-2">
                          {isHighlight ? (
                              <>
-                                 <div className="flex flex-col gap-1">
-                                     <span className="font-semibold text-gray-700">Tên vùng Highlight:</span>
-                                     <input 
-                                        type="text" 
-                                        value={f.name} 
-                                        onChange={(e) => {
-                                          setFields(fields.map(field => field.id === f.id ? { ...field, name: e.target.value } : field));
-                                        }}
-                                        className={`w-full border border-gray-300 rounded px-2 py-1 outline-none bg-white ${focusRingClass}`}
-                                     />
-                                 </div>
+                                 
                                  <div className="flex flex-col gap-1">
                                      <span className="font-semibold text-gray-700">Màu tô sáng (Highlight):</span>
                                      <div className="flex items-center gap-1.5">
@@ -2767,6 +2945,41 @@ export default function App() {
                                         <option value="monospace">Courier New (Mã máy)</option>
                                      </select>
                                  </div>
+                                  <div className="flex flex-col gap-1">
+                                      <span className="font-semibold text-gray-700">Định dạng chữ:</span>
+                                      <div className="flex items-center gap-1.5">
+                                          <button
+                                              type="button"
+                                              onClick={() => setFields(fields.map(field => field.id === f.id ? { ...field, isBold: !field.isBold } : field))}
+                                              className={`px-3 py-1 rounded text-xs font-bold transition-all cursor-pointer ${
+                                                  f.isBold ? 'bg-indigo-600 text-white shadow-xs' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300'
+                                              }`}
+                                              title="In đậm (Bold)"
+                                          >
+                                              B
+                                          </button>
+                                          <button
+                                              type="button"
+                                              onClick={() => setFields(fields.map(field => field.id === f.id ? { ...field, isItalic: !field.isItalic } : field))}
+                                              className={`px-3 py-1 rounded text-xs italic font-serif transition-all cursor-pointer ${
+                                                  f.isItalic ? 'bg-indigo-600 text-white shadow-xs' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300'
+                                              }`}
+                                              title="In nghiêng (Italic)"
+                                          >
+                                              I
+                                          </button>
+                                          <button
+                                              type="button"
+                                              onClick={() => setFields(fields.map(field => field.id === f.id ? { ...field, isUnderline: !field.isUnderline } : field))}
+                                              className={`px-3 py-1 rounded text-xs underline transition-all cursor-pointer ${
+                                                  f.isUnderline ? 'bg-indigo-600 text-white shadow-xs' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300'
+                                              }`}
+                                              title="Gạch chân (Underline)"
+                                          >
+                                              U
+                                          </button>
+                                      </div>
+                                  </div>
                                  <div className="flex gap-2 items-end">
                                      <div className="flex-1 flex flex-col gap-1">
                                          <span className="font-semibold text-gray-700">Cỡ chữ (px):</span>
@@ -2993,7 +3206,7 @@ export default function App() {
         // Nếu không ở chế độ sửa và chữ này chưa bị chỉnh sửa, không cần vẽ đè lên canvas
         if (!isEditMode && !isModified) return null;
 
-        const fontFamily = getFontFamily(t.customFontFamily || t.fontName);
+        const fontFamily = getFontFamily(t.customFontFamily || 'serif');
         const fontStyle = t.isItalic ? 'italic' : 'normal';
         const fontWeight = t.isBold ? 'bold' : 'normal';
         const customColor = t.customColor || '#000000';
