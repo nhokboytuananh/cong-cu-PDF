@@ -4,11 +4,11 @@
  */
 import React, { useState, useRef, useEffect } from 'react';
 import { 
-  PenSquare, Layout, FileDown, X, MousePointer2, FileUp, Loader2, FilePlus, Trash2, Type, ArrowUp, ArrowDown, Edit, HelpCircle, Info, CheckCircle2, MousePointerClick, Bold, Italic, Settings2, Highlighter, Eraser
+  PenSquare, Layout, FileDown, X, MousePointer2, FileUp, Loader2, FilePlus, Trash2, Type, ArrowUp, ArrowDown, Edit, HelpCircle, Info, CheckCircle2, MousePointerClick, Bold, Italic, Settings2, Highlighter, Eraser, RotateCcw, RotateCw, RefreshCw
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as pdfLib from 'pdf-lib';
-import { PDFDocument, PDFRawStream, PDFDict, PDFName } from 'pdf-lib';
+import { PDFDocument, PDFRawStream, PDFDict, PDFName, degrees } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 
 // Configure pdfjs worker url
@@ -1003,6 +1003,48 @@ export default function App() {
     } catch (e) {
       console.error(e);
       alert("Không thể xóa các trang này.");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleRotatePages = async (pageIndices: number[], direction: 'cw' | 'ccw' | '180') => {
+    if (!originalPdfBuffer) return;
+    if (isDigitallySigned) {
+      alert("Tài liệu hiện tại đã được ký số. Việc xoay trang đã bị khóa để tránh làm hỏng chữ ký số.");
+      return;
+    }
+    if (pageIndices.length === 0) return;
+
+    setIsProcessing(true);
+    try {
+      const pdfDoc = await PDFDocument.load(originalPdfBuffer, { ignoreEncryption: true });
+      const pdfPages = pdfDoc.getPages();
+
+      const delta = direction === 'cw' ? 90 : (direction === 'ccw' ? -90 : 180);
+
+      for (const idx of pageIndices) {
+        if (idx >= 0 && idx < pdfPages.length) {
+          const page = pdfPages[idx];
+          const currentRot = page.getRotation();
+          let currentAngle = 0;
+          if (currentRot && typeof currentRot.angle === 'number') {
+            currentAngle = currentRot.angle;
+          } else if (typeof currentRot === 'number') {
+            currentAngle = currentRot;
+          }
+          const newAngle = (currentAngle + delta + 360) % 360;
+          page.setRotation(degrees(newAngle));
+        }
+      }
+
+      const newPdfBytes = await pdfDoc.save();
+      setOriginalPdfBuffer(newPdfBytes);
+
+      await renderPdfPages(newPdfBytes);
+    } catch (err) {
+      console.error('Error rotating pages:', err);
+      alert("Không thể xoay trang PDF.");
     } finally {
       setIsProcessing(false);
     }
@@ -2205,6 +2247,12 @@ export default function App() {
                                 <strong className="text-gray-800">Xóa các trang thừa:</strong> Di chuột vào trang bất kỳ ở cột bên trái hoặc trang chính và nhấp vào nút biểu tượng <span className="inline-flex items-center gap-0.5 bg-red-50 text-red-700 border border-red-200 px-1 py-0.5 rounded text-xs"><Trash2 className="w-3 h-3 text-red-600" /> Xóa</span> để lược bỏ trang mong muốn.
                              </div>
                           </li>
+                          <li className="flex items-start gap-2">
+                             <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">5</div>
+                             <div>
+                                <strong className="text-gray-800">Xoay từng trang hoặc nhiều trang:</strong> Rê chuột vào góc bên trái trang bất kỳ và nhấp các nút biểu tượng <span className="inline-flex items-center gap-0.5 bg-purple-50 text-purple-700 border border-purple-200 px-1 py-0.5 rounded text-xs"><RotateCcw className="w-3 h-3 text-purple-600" /> / <RotateCw className="w-3 h-3 text-purple-600" /> Xoay 90°</span>. Để xoay nhiều trang cùng lúc, tích chọn các checkbox ở góc trang và dùng các nút xoay ở thanh nổi phía dưới hoặc trên Ribbon toolbar.
+                             </div>
+                          </li>
                        </ul>
                     </div>
                  )}
@@ -2385,6 +2433,58 @@ export default function App() {
              <span className="text-[10px] font-medium leading-[1.1] text-center text-gray-700 z-10">Thêm trang<br/>ở cuối</span>
            </button>
            <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-indigo-800/60 uppercase tracking-wider font-semibold">Tài liệu</div>
+        </div>
+
+        <div className="w-px h-16 bg-gray-300"></div>
+
+        {/* Page Rotation Group */}
+        <div className="flex items-start space-x-1 relative pr-6">
+           <button 
+             onClick={() => {
+               if (selectedPageIndices.length > 0) {
+                 handleRotatePages(selectedPageIndices, 'ccw');
+               } else {
+                 handleRotatePages([currentPage - 1], 'ccw');
+               }
+             }}
+             className="flex flex-col items-center justify-start w-[68px] h-[68px] rounded-lg border border-transparent hover:bg-white hover:border-purple-200 hover:shadow-sm p-1 pt-1.5 gap-1 transition-all relative overflow-hidden group cursor-pointer"
+             title={selectedPageIndices.length > 0 ? `Xoay sang trái 90° (${selectedPageIndices.length} trang đã chọn)` : `Xoay sang trái 90° (Trang ${currentPage})`}
+           >
+             <div className="absolute inset-0 bg-purple-50 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+             <RotateCcw className="w-6 h-6 text-purple-600 z-10 drop-shadow-sm" strokeWidth={1.5} />
+             <span className="text-[10px] font-medium leading-[1.1] text-center text-gray-700 z-10">Xoay trái<br/>90°</span>
+           </button>
+
+           <button 
+             onClick={() => {
+               if (selectedPageIndices.length > 0) {
+                 handleRotatePages(selectedPageIndices, 'cw');
+               } else {
+                 handleRotatePages([currentPage - 1], 'cw');
+               }
+             }}
+             className="flex flex-col items-center justify-start w-[68px] h-[68px] rounded-lg border border-transparent hover:bg-white hover:border-purple-200 hover:shadow-sm p-1 pt-1.5 gap-1 transition-all relative overflow-hidden group cursor-pointer"
+             title={selectedPageIndices.length > 0 ? `Xoay sang phải 90° (${selectedPageIndices.length} trang đã chọn)` : `Xoay sang phải 90° (Trang ${currentPage})`}
+           >
+             <div className="absolute inset-0 bg-purple-50 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+             <RotateCw className="w-6 h-6 text-purple-600 z-10 drop-shadow-sm" strokeWidth={1.5} />
+             <span className="text-[10px] font-medium leading-[1.1] text-center text-gray-700 z-10">Xoay phải<br/>90°</span>
+           </button>
+
+           <button 
+             onClick={() => {
+               if (!confirm("Bạn có chắc chắn muốn xoay TẤT CẢ các trang trong tài liệu sang phải 90°?")) return;
+               const allIndices = pages.map((_, i) => i);
+               handleRotatePages(allIndices, 'cw');
+             }}
+             className="flex flex-col items-center justify-start w-[68px] h-[68px] rounded-lg border border-transparent hover:bg-white hover:border-purple-200 hover:shadow-sm p-1 pt-1.5 gap-1 transition-all relative overflow-hidden group cursor-pointer"
+             title="Xoay tất cả các trang trong tài liệu sang phải 90°"
+           >
+             <div className="absolute inset-0 bg-purple-50 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+             <RefreshCw className="w-6 h-6 text-purple-600 z-10 drop-shadow-sm" strokeWidth={1.5} />
+             <span className="text-[10px] font-medium leading-[1.1] text-center text-gray-700 z-10">Xoay tất cả<br/>trang</span>
+           </button>
+           <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-purple-800/60 uppercase tracking-wider font-semibold">Xoay trang</div>
         </div>
 
         <div className="w-px h-16 bg-gray-300"></div>
@@ -2617,6 +2717,8 @@ export default function App() {
                          <>
                            <button title="Chèn PDF vào trước trang này" onClick={() => { setInsertTargetIndex(i); insertFileInputRef.current?.click(); }} className="p-1.5 bg-white border border-gray-300 rounded shadow hover:bg-gray-100 text-green-600"><FilePlus className="w-4 h-4" /></button>
                            <button title="Xóa trang này" onClick={() => setDeletePageConfirm({index: i, dataUrl: p.dataUrl})} className="p-1.5 bg-white border border-gray-300 rounded shadow hover:bg-gray-100 text-red-600"><Trash2 className="w-4 h-4" /></button>
+                           <button title="Xoay sang trái 90°" onClick={() => handleRotatePages([i], 'ccw')} className="p-1.5 bg-white border border-gray-300 rounded shadow hover:bg-gray-100 text-purple-600 cursor-pointer"><RotateCcw className="w-4 h-4" /></button>
+                           <button title="Xoay sang phải 90°" onClick={() => handleRotatePages([i], 'cw')} className="p-1.5 bg-white border border-gray-300 rounded shadow hover:bg-gray-100 text-purple-600 cursor-pointer"><RotateCw className="w-4 h-4" /></button>
                            <button 
                                title="Di chuyển trang lên" 
                                onClick={() => handleMovePage(i, 'up')} 
@@ -2700,6 +2802,35 @@ export default function App() {
               </div>
               
               <div className="h-6 w-px bg-gray-200" />
+
+               <div className="flex items-center gap-1.5">
+                  <button 
+                     onClick={() => handleRotatePages(selectedPageIndices, 'ccw')}
+                     className="flex items-center gap-1 text-xs text-purple-700 hover:text-purple-800 font-semibold bg-purple-50 hover:bg-purple-100 border border-purple-200 px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer shadow-xs"
+                     title="Xoay các trang đã chọn sang trái 90°"
+                  >
+                     <RotateCcw className="w-3.5 h-3.5" />
+                     Xoay trái 90°
+                  </button>
+                  <button 
+                     onClick={() => handleRotatePages(selectedPageIndices, 'cw')}
+                     className="flex items-center gap-1 text-xs text-purple-700 hover:text-purple-800 font-semibold bg-purple-50 hover:bg-purple-100 border border-purple-200 px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer shadow-xs"
+                     title="Xoay các trang đã chọn sang phải 90°"
+                  >
+                     <RotateCw className="w-3.5 h-3.5" />
+                     Xoay phải 90°
+                  </button>
+                  <button 
+                     onClick={() => handleRotatePages(selectedPageIndices, '180')}
+                     className="flex items-center gap-1 text-xs text-purple-700 hover:text-purple-800 font-semibold bg-purple-50 hover:bg-purple-100 border border-purple-200 px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer shadow-xs"
+                     title="Xoay ngược 180°"
+                  >
+                     <RefreshCw className="w-3.5 h-3.5" />
+                     Xoay 180°
+                  </button>
+               </div>
+
+               <div className="h-6 w-px bg-gray-200" />
               
               <div className="flex items-center gap-2">
                  <span className="text-xs text-gray-500 font-medium">Di chuyển đến trước trang:</span>
