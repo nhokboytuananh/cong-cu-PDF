@@ -4,12 +4,16 @@
  */
 import React, { useState, useRef, useEffect } from 'react';
 import { 
-  PenSquare, Layout, FileDown, X, MousePointer2, FileUp, Loader2, FilePlus, Trash2, Type, ArrowUp, ArrowDown, Edit, HelpCircle, Info, CheckCircle2, MousePointerClick, Bold, Italic, Settings2, Highlighter, Eraser, RotateCcw, RotateCw, RefreshCw
+  PenSquare, Layout, FileDown, X, MousePointer2, FileUp, Loader2, FilePlus, Trash2, Type, ArrowUp, ArrowDown, Edit, HelpCircle, Info, CheckCircle2, MousePointerClick,
+  RotateCcw, RotateCw, PanelLeft, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Bold, Italic, Check, Sparkles, Highlighter
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as pdfLib from 'pdf-lib';
-import { PDFDocument, PDFRawStream, PDFDict, PDFName, degrees } from 'pdf-lib';
+import { PDFDocument } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
+import { PageThumbnailSidebar } from './components/PageThumbnailSidebar';
+import { ZoomControls } from './components/ZoomControls';
+import { HighlightItem } from './types';
 
 // Configure pdfjs worker url
 // @ts-ignore
@@ -26,8 +30,6 @@ type PdfTextItem = {
   height: number;
   fontSize: number;
   fontName: string;
-  /** Tên font nội bộ trong PDF (e.g. 'F1', 'ABCDEF+Arial') dùng để tra cứu font gốc */
-  pdfFontName?: string;
   pageIndex: number;
   isModified: boolean;
   pdfX: number;
@@ -46,13 +48,18 @@ type PdfTextItem = {
   rotation?: number;
 };
 
+export const HIGHLIGHT_COLORS = [
+  { name: 'Vàng', hex: '#fde047', bgClass: 'bg-yellow-300' },
+  { name: 'Xanh lá', hex: '#86efac', bgClass: 'bg-green-300' },
+  { name: 'Xanh dương', hex: '#7dd3fc', bgClass: 'bg-sky-300' },
+  { name: 'Hồng', hex: '#f472b6', bgClass: 'bg-pink-400' },
+  { name: 'Cam', hex: '#fdba74', bgClass: 'bg-orange-300' },
+  { name: 'Tím', hex: '#d8b4fe', bgClass: 'bg-purple-300' },
+];
+
 const getIsSerif = (fontName: string): boolean => {
   const name = (fontName || '').toLowerCase();
-  // Bổ sung các font sans-serif phổ biến khác như tahoma, verdana, segoe, arimo
-  if (name.includes('sans') || name.includes('arial') || name.includes('helvetica') || 
-      name.includes('calibri') || name.includes('roboto') || name.includes('inter') || 
-      name.includes('tahoma') || name.includes('verdana') || name.includes('segoe') || 
-      name.includes('arimo')) {
+  if (name.includes('sans') || name.includes('arial') || name.includes('helvetica') || name.includes('calibri') || name.includes('roboto') || name.includes('inter')) {
     return false;
   }
   if (name.includes('courier') || name.includes('mono') || name.includes('consolas')) {
@@ -68,14 +75,11 @@ type Field = {
   y: number;
   width: number;
   height: number;
-  type: 'signature' | 'text' | 'highlight';
+  type: 'signature' | 'text';
   name: string;
+  originalName?: string;
   textValue?: string;
   fontSize?: number;
-  fontFamily?: string;
-  color?: string;
-  highlightColor?: string;
-  opacity?: number;
 };
 
 type PdfPage = {
@@ -101,39 +105,109 @@ const checkIsDigitallySigned = (uint8Array: Uint8Array): boolean => {
   }
 };
 
-const getFontFamily = (fontName: string): string => {
-  // Bỏ prefix subset kiểu "ABCDEF+" (ví dụ: "ABCDEF+Arial" → "Arial")
-  const cleaned = (fontName || '').replace(/^[A-Z]{6}\+/, '');
-  const name = cleaned.toLowerCase();
+export const getCleanFontDisplayName = (fontName?: string): string => {
+  const name = (fontName || '').toLowerCase();
+  if (name.includes('courier') || name.includes('mono') || name.includes('consolas')) {
+    return 'Courier New';
+  }
+  if (name.includes('roboto')) {
+    return 'Roboto';
+  }
+  if (name.includes('arial') || name.includes('arimo') || name.includes('helvetica') || name.includes('calibri') || name.includes('tahoma') || name.includes('vnarial') || name.includes('sans')) {
+    return 'Arial';
+  }
+  // Tiêu chuẩn hành chính VN (Nghị định 30/2020/NĐ-CP): Times New Roman
+  return 'Times New Roman';
+};
 
-  // Monospace / Courier
-  if (name.includes('courier') || name.includes('mono') || name.includes('consolas') ||
-      name.includes('inconsolata') || name.includes('sourcecodemono') || name.includes('firacode')) {
+export const getFontFamily = (fontName?: string): string => {
+  const name = (fontName || '').toLowerCase();
+  if (name.includes('courier') || name.includes('mono') || name.includes('consolas')) {
     return '"Courier New", Courier, monospace';
   }
-  // Sans-serif phổ biến -> ưu tiên hiển thị Arial của hệ thống trước, fallback về Arimo/Roboto
-  if (name.includes('helvetica') || name.includes('arial') || name.includes('calibri') ||
-      name.includes('sans') || name.includes('roboto') || name.includes('inter') ||
-      name.includes('opensans') || name.includes('nunito') || name.includes('lato') ||
-      name.includes('ubuntu') || name.includes('gill') || name.includes('futura') ||
-      name.includes('optima') || name.includes('tahoma') || name.includes('verdana') ||
-      name.includes('trebuchet') || name.includes('segoe')) {
-    return '"Arial", "Arimo", "Roboto", sans-serif';
+  if (name.includes('roboto')) {
+    return '"Roboto", sans-serif';
   }
-  // Serif phổ biến -> ưu tiên hiển thị Times New Roman của hệ thống trước, fallback về Tinos
-  if (name.includes('times') || name.includes('georgia') || name.includes('palatino') ||
-      name.includes('garamond') || name.includes('baskerville') || name.includes('cambria') ||
-      name.includes('book antiqua') || name.includes('century') || name.includes('minion') ||
-      name.includes('constantia') || name.includes('tinos') || name.includes('serif')) {
-    return '"Times New Roman", "Tinos", Times, serif';
+  if (name.includes('arial') || name.includes('arimo') || name.includes('helvetica') || name.includes('calibri') || name.includes('tahoma') || name.includes('vnarial') || name.includes('sans')) {
+    return 'Arial, Helvetica, "Arimo", sans-serif';
   }
-  // Font tiếng Việt phổ biến → sans-serif
-  if (name.includes('unicode') || name.includes('viet') || name.includes('arimo') || name.includes('noto')) {
-    return '"Arial", "Arimo", sans-serif';
-  }
-  // Mặc định: nếu không nhận ra thì dùng serif (Times New Roman)
-  return '"Times New Roman", "Tinos", Times, serif';
+  // Ưu tiên font Times New Roman chuẩn, không fallback sang Tinos gây biến dạng dấu tiếng Việt
+  return '"Times New Roman", Times, "Liberation Serif", serif';
 };
+
+export function detectFontProperties(item: any, textContent: any, page: any, pdf: any) {
+  let rawName = '';
+  let isBold = false;
+  let isItalic = false;
+
+  // 1. Thử lấy từ commonObjs của trang hoặc tài liệu pdfjs
+  try {
+    const commonObjs = (page as any)?.commonObjs || (pdf as any)?.commonObjs;
+    if (commonObjs && typeof commonObjs.has === 'function' && commonObjs.has(item.fontName)) {
+      const font = commonObjs.get(item.fontName);
+      if (font) {
+        if (font.name) rawName = font.name;
+        else if (font.fallbackName) rawName = font.fallbackName;
+        if (font.bold !== undefined) isBold = Boolean(font.bold);
+        if (font.italic !== undefined) isItalic = Boolean(font.italic);
+        if (font.black) isBold = true;
+        if (font.weight && (font.weight >= 600 || font.weight === 'bold')) isBold = true;
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  // 2. Thử lấy từ textContent.styles
+  if (!rawName && textContent?.styles?.[item.fontName]) {
+    const style = textContent.styles[item.fontName];
+    rawName = style.fontFamily || '';
+  }
+
+  if (!rawName) {
+    rawName = item.fontName || '';
+  }
+
+  // Tẩy tiền tố subset ngẫu nhiên như "ABCDEF+TimesNewRomanPSMT" -> "TimesNewRomanPSMT"
+  const cleanName = (rawName || '').replace(/^[A-Z]{6}\+/, '');
+  const lower = cleanName ? cleanName.toLowerCase() : '';
+
+  // Nhận diện chữ Đậm (Bold)
+  if (
+    lower.includes('bold') ||
+    lower.includes('black') ||
+    lower.includes('heavy') ||
+    lower.includes('-b') ||
+    lower.includes('_b') ||
+    lower.includes('bd') ||
+    lower.includes('w7') ||
+    lower.includes('w8') ||
+    lower.includes('w9')
+  ) {
+    isBold = true;
+  }
+
+  // Nhận diện chữ Nghiêng (Italic)
+  if (
+    lower.includes('italic') ||
+    lower.includes('oblique') ||
+    lower.includes('-i') ||
+    lower.includes('_i') ||
+    lower.includes('it') ||
+    lower.includes('slanted')
+  ) {
+    isItalic = true;
+  }
+
+  const detectedFamily = getCleanFontDisplayName(cleanName);
+
+  return {
+    rawName: cleanName || detectedFamily,
+    fontFamily: detectedFamily,
+    isBold,
+    isItalic,
+  };
+}
 
 export default function App() {
   useEffect(() => {
@@ -147,6 +221,7 @@ export default function App() {
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
   const [isDigitallySigned, setIsDigitallySigned] = useState<boolean>(false);
   const [fields, setFields] = useState<Field[]>([]);
+  const [initialFieldNames, setInitialFieldNames] = useState<string[]>([]);
   const [pages, setPages] = useState<PdfPage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [documentName, setDocumentName] = useState('Bản nháp');
@@ -174,21 +249,40 @@ export default function App() {
   const [deletePageConfirm, setDeletePageConfirm] = useState<{index: number, dataUrl: string} | null>(null);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [selectedPageIndices, setSelectedPageIndices] = useState<number[]>([]);
+  const [lastSelectedPageIndex, setLastSelectedPageIndex] = useState<number | null>(null);
+  const [zoom, setZoom] = useState<number>(1.0);
+  const [showPageSidebar, setShowPageSidebar] = useState<boolean>(true);
+  const workspaceRef = useRef<HTMLDivElement>(null);
   const [pdfTexts, setPdfTexts] = useState<PdfTextItem[]>([]);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
   const [vietnameseFontBytes, setVietnameseFontBytes] = useState<Uint8Array | null>(null);
-  /** Cache font bytes trích xuất từ PDF gốc, key là tên font internal (pdfFontName) */
-  const [extractedFontCache, setExtractedFontCache] = useState<Map<string, Uint8Array>>(new Map());
 
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
   const [exportFilename, setExportFilename] = useState<string>('');
 
   const [showHelpModal, setShowHelpModal] = useState<boolean>(false);
-  const [activeHelpTab, setActiveHelpTab] = useState<'document' | 'fields' | 'edit_text' | 'export_overwrite'>('document');
+  const [activeHelpTab, setActiveHelpTab] = useState<'document' | 'fields' | 'edit_text' | 'highlights' | 'export_overwrite'>('document');
 
   // Styling & Nudging States for PDF text edits
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
   const [showTextHighlights, setShowTextHighlights] = useState<boolean>(true);
+
+  // Highlight annotations state
+  const [highlights, setHighlights] = useState<HighlightItem[]>([]);
+  const [selectedHighlightId, setSelectedHighlightId] = useState<string | null>(null);
+  const [highlightColor, setHighlightColor] = useState<string>('#fde047');
+  const [highlightOpacity, setHighlightOpacity] = useState<number>(0.45);
+  const [highlightInteraction, setHighlightInteraction] = useState<{
+    id: string;
+    type: 'drag' | 'e';
+    startX: number;
+    startY: number;
+    originalX: number;
+    originalY: number;
+    originalWidth: number;
+    originalHeight: number;
+    pageIndex: number;
+  } | null>(null);
 
   // Lazy-loaded high-quality Vietnamese fonts
   const [fontSerifRegular, setFontSerifRegular] = useState<Uint8Array | null>(null);
@@ -201,10 +295,6 @@ export default function App() {
   const [fontsLoading, setFontsLoading] = useState<boolean>(false);
   const [fontsLoaded, setFontsLoaded] = useState<boolean>(false);
   const fontsLoadingPromiseRef = useRef<Promise<void> | null>(null);
-
-  /** Font file do user upload (.ttf/.otf) để dùng khi export thay cho fallback font */
-  const [userUploadedFontBytes, setUserUploadedFontBytes] = useState<Uint8Array | null>(null);
-  const [userUploadedFontName, setUserUploadedFontName] = useState<string>('');
 
   const ensureFontsLoaded = async () => {
     if (fontsLoaded) return;
@@ -236,35 +326,38 @@ export default function App() {
       };
 
       const serifRegularUrls = [
-        'https://raw.githubusercontent.com/asif-mahmud/times-new-roman/master/times.ttf',
-        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/tinos/Tinos-Regular.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/tinos/Tinos-Regular.ttf'
+        'https://cdn.jsdelivr.net/gh/codxse/linux-mandatory-font@master/mac-fonts/times.ttf',
+        'https://raw.githubusercontent.com/codxse/linux-mandatory-font/master/mac-fonts/times.ttf',
+        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/tinos/Tinos-Regular.ttf'
       ];
       const serifBoldUrls = [
-        'https://raw.githubusercontent.com/asif-mahmud/times-new-roman/master/timesbd.ttf',
-        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/tinos/Tinos-Bold.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/tinos/Tinos-Bold.ttf'
+        'https://cdn.jsdelivr.net/gh/codxse/linux-mandatory-font@master/mac-fonts/timesbd.ttf',
+        'https://raw.githubusercontent.com/codxse/linux-mandatory-font/master/mac-fonts/timesbd.ttf',
+        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/tinos/Tinos-Bold.ttf'
       ];
       const serifItalicUrls = [
-        'https://raw.githubusercontent.com/asif-mahmud/times-new-roman/master/timesi.ttf',
-        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/tinos/Tinos-Italic.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/tinos/Tinos-Italic.ttf'
+        'https://cdn.jsdelivr.net/gh/codxse/linux-mandatory-font@master/mac-fonts/timesi.ttf',
+        'https://raw.githubusercontent.com/codxse/linux-mandatory-font/master/mac-fonts/timesi.ttf',
+        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/tinos/Tinos-Italic.ttf'
       ];
 
       const sansRegularUrls = [
-        'https://raw.githubusercontent.com/catap/msttcorefonts/master/arial.ttf',
+        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/roboto/static/Roboto-Regular.ttf',
+        'https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Regular.ttf',
         'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/arimo/Arimo-Regular.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Regular.ttf'
+        'https://raw.githubusercontent.com/google/fonts/main/ofl/arimo/Arimo-Regular.ttf'
       ];
       const sansBoldUrls = [
-        'https://raw.githubusercontent.com/catap/msttcorefonts/master/arialbd.ttf',
+        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/roboto/static/Roboto-Bold.ttf',
+        'https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Bold.ttf',
         'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/arimo/Arimo-Bold.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Bold.ttf'
+        'https://raw.githubusercontent.com/google/fonts/main/ofl/arimo/Arimo-Bold.ttf'
       ];
       const sansItalicUrls = [
-        'https://raw.githubusercontent.com/catap/msttcorefonts/master/ariali.ttf',
+        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/roboto/static/Roboto-Italic.ttf',
+        'https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Italic.ttf',
         'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/arimo/Arimo-Italic.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Italic.ttf'
+        'https://raw.githubusercontent.com/google/fonts/main/ofl/arimo/Arimo-Italic.ttf'
       ];
 
       const [sr, sb, si, sar, sab, sai] = await Promise.all([
@@ -303,33 +396,58 @@ export default function App() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setActiveTool('Select');
+        setSelectedFieldId(null);
+        setSelectedTextId(null);
+        setSelectedHighlightId(null);
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && !editingTextId) {
+        const activeTag = document.activeElement?.tagName ? document.activeElement.tagName.toLowerCase() : '';
+        if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') return;
+        if (selectedHighlightId) {
+          e.preventDefault();
+          setHighlights(prev => prev.filter(h => h.id !== selectedHighlightId));
+          setSelectedHighlightId(null);
+        } else if (selectedFieldId) {
+          e.preventDefault();
+          deleteField(selectedFieldId);
+          setSelectedFieldId(null);
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, []);
+  }, [editingTextId, selectedHighlightId, selectedFieldId]);
+
+  useEffect(() => {
+    if (documentName && documentName !== 'Bản nháp') {
+      try {
+        localStorage.setItem(`pdf_highlights_${documentName}`, JSON.stringify(highlights));
+      } catch (e) {
+        // ignore storage quota errors
+      }
+    }
+  }, [highlights, documentName]);
 
   useEffect(() => {
     const loadFont = async () => {
       try {
-        const response = await fetch('https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/roboto/static/Roboto-Regular.ttf');
+        const response = await fetch('https://cdn.jsdelivr.net/gh/codxse/linux-mandatory-font@master/mac-fonts/times.ttf');
         if (response.ok) {
           const buffer = await response.arrayBuffer();
           setVietnameseFontBytes(new Uint8Array(buffer));
-          console.log("Vietnamese font loaded successfully.");
+          console.log("Vietnamese Times New Roman font loaded successfully.");
         } else {
-          // fallback to Arimo
-          const resp2 = await fetch('https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/arimo/Arimo-Regular.ttf');
+          // fallback to Roboto
+          const resp2 = await fetch('https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/roboto/static/Roboto-Regular.ttf');
           if (resp2.ok) {
             const buffer = await resp2.arrayBuffer();
             setVietnameseFontBytes(new Uint8Array(buffer));
-            console.log("Vietnamese font (Arimo) loaded successfully.");
+            console.log("Vietnamese font (Roboto fallback) loaded.");
           }
         }
       } catch (err) {
-        console.error("Failed to load Roboto/Arimo font from CDN:", err);
+        console.error("Failed to load Times New Roman font from CDN:", err);
       }
     };
     loadFont();
@@ -361,85 +479,613 @@ export default function App() {
      }
   };
 
-  /**
-   * Kiểm tra magic bytes để xác nhận đây là TTF/OTF/TTC hợp lệ.
-   */
-  const isFontBytes = (bytes: Uint8Array): boolean => {
-    if (bytes.length < 4) return false;
-    // TrueType: 0x00010000
-    if (bytes[0] === 0x00 && bytes[1] === 0x01 && bytes[2] === 0x00 && bytes[3] === 0x00) return true;
-    // OTF/CFF: 'OTTO'
-    if (bytes[0] === 0x4F && bytes[1] === 0x54 && bytes[2] === 0x54 && bytes[3] === 0x4F) return true;
-    // TTC: 'ttcf'
-    if (bytes[0] === 0x74 && bytes[1] === 0x74 && bytes[2] === 0x63 && bytes[3] === 0x66) return true;
-    // 'true' (some Mac TTF)
-    if (bytes[0] === 0x74 && bytes[1] === 0x72 && bytes[2] === 0x75 && bytes[3] === 0x65) return true;
+  // Wheel zoom with Ctrl or Cmd
+  useEffect(() => {
+    const container = workspaceRef.current;
+    if (!container) return;
+    const handleNativeWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 0.15 : -0.15;
+        setZoom((prev) => {
+          const next = Math.round((prev + delta) * 100) / 100;
+          return Math.min(Math.max(next, 0.25), 3.0);
+        });
+      }
+    };
+    container.addEventListener('wheel', handleNativeWheel, { passive: false });
+    return () => {
+      container.removeEventListener('wheel', handleNativeWheel);
+    };
+  }, []);
+
+  const handleFitWidth = () => {
+    if (!workspaceRef.current) return;
+    const targetPage = pages[currentPage - 1] || pages[0];
+    const pageWidth = targetPage ? targetPage.width : 800;
+    const availableWidth = workspaceRef.current.clientWidth - 96;
+    if (availableWidth > 100) {
+      const calculatedZoom = Math.round((availableWidth / pageWidth) * 100) / 100;
+      setZoom(Math.min(Math.max(calculatedZoom, 0.25), 3.0));
+    }
+  };
+
+  const handleFitPage = () => {
+    if (!workspaceRef.current) return;
+    const targetPage = pages[currentPage - 1] || pages[0];
+    const pageHeight = targetPage ? targetPage.height : 1131;
+    const availableHeight = workspaceRef.current.clientHeight - 96;
+    if (availableHeight > 100) {
+      const calculatedZoom = Math.round((availableHeight / pageHeight) * 100) / 100;
+      setZoom(Math.min(Math.max(calculatedZoom, 0.25), 3.0));
+    }
+  };
+
+  const handleResetZoom = () => {
+    setZoom(1.0);
+  };
+
+  const handleScrollToPage = (index: number) => {
+    const el = document.getElementById(`page-${index}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setCurrentPage(index + 1);
+    }
+  };
+
+  const handleRotatePages = async (indices: number[], deltaDegrees: number) => {
+    if (!originalPdfBuffer || indices.length === 0) return;
+    if (isDigitallySigned) {
+      alert("Tài liệu hiện tại đã được ký số. Việc xoay trang đã bị khóa để tránh làm hỏng chữ ký số.");
+      return;
+    }
+
+    setIsProcessing(true);
+    try {
+      const pdfDoc = await PDFDocument.load(originalPdfBuffer);
+      indices.forEach((idx) => {
+        if (idx >= 0 && idx < pdfDoc.getPageCount()) {
+          const page = pdfDoc.getPage(idx);
+          const currentAngle = page.getRotation().angle;
+          let nextAngle = (currentAngle + deltaDegrees) % 360;
+          if (nextAngle < 0) nextAngle += 360;
+          page.setRotation(pdfLib.degrees(nextAngle));
+        }
+      });
+
+      const newPdfBytes = await pdfDoc.save();
+      setOriginalPdfBuffer(newPdfBytes);
+      await renderPdfPages(newPdfBytes);
+    } catch (err) {
+      console.error('Error rotating pages:', err);
+      alert('Không thể xoay trang.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const getPageEffectiveDimensions = (page: any) => {
+    const { width, height } = page.getSize();
+    let visibleWidth = width;
+    let visibleHeight = height;
+    let boxX = 0;
+    let boxY = 0;
+    try {
+      const cropBox = page.getCropBox();
+      if (cropBox) {
+        boxX = cropBox.x || 0;
+        boxY = cropBox.y || 0;
+        visibleWidth = cropBox.width;
+        visibleHeight = cropBox.height;
+      }
+    } catch (e) {
+      console.error("Error getting cropbox", e);
+    }
+    return { boxX, boxY, visibleWidth, visibleHeight };
+  };
+
+  const isSignatureFieldSigned = (fieldDict: any, widgetDict: any, doc: any): boolean => {
+    try {
+      if (!doc || !doc.context) return false;
+      
+      // 1. Traverse V entry on widget, field, or up to 5 levels of Parent hierarchy
+      let vObj = fieldDict?.get?.(pdfLib.PDFName.of('V')) || widgetDict?.get?.(pdfLib.PDFName.of('V'));
+      let curr = fieldDict || widgetDict;
+      let depth = 0;
+      while (!vObj && curr && depth < 5) {
+        depth++;
+        const parentRef = curr.get?.(pdfLib.PDFName.of('Parent'));
+        if (!parentRef) break;
+        curr = doc.context.lookup(parentRef);
+        if (curr && curr instanceof pdfLib.PDFDict) {
+          vObj = curr.get(pdfLib.PDFName.of('V'));
+        }
+      }
+
+      if (vObj) {
+        const resolved = doc.context.lookup(vObj);
+        if (resolved && !(resolved instanceof pdfLib.PDFNull)) {
+          if (resolved instanceof pdfLib.PDFDict) {
+            const type = resolved.get(pdfLib.PDFName.of('Type'))?.toString();
+            const hasByteRange = resolved.has(pdfLib.PDFName.of('ByteRange'));
+            const hasContents = resolved.has(pdfLib.PDFName.of('Contents'));
+            const hasFilter = resolved.has(pdfLib.PDFName.of('Filter'));
+            const hasSubFilter = resolved.has(pdfLib.PDFName.of('SubFilter'));
+            if (type === '/Sig' || hasByteRange || hasContents || hasFilter || hasSubFilter) {
+              return true;
+            }
+            if (typeof (resolved as any).entries === 'function' && (resolved as any).entries().length > 0) {
+              return true;
+            }
+          }
+          return true;
+        }
+      }
+
+      // 2. Check /AP (Appearance) stream:
+      // Signed signature widgets always have an appearance stream (/AP) containing normal appearance (/N).
+      // Unsigned signature fields never have an appearance stream.
+      const apObj = widgetDict?.get?.(pdfLib.PDFName.of('AP')) || fieldDict?.get?.(pdfLib.PDFName.of('AP'));
+      if (apObj) {
+        const resolvedAp = doc.context.lookup(apObj);
+        if (resolvedAp && resolvedAp instanceof pdfLib.PDFDict && resolvedAp.has(pdfLib.PDFName.of('N'))) {
+          return true;
+        }
+      }
+
+      return false;
+    } catch (e) {
+      console.warn("Error checking signature signed status:", e);
+      return false;
+    }
+  };
+
+  const checkFieldSigned = (field: any, doc: any, signedNames?: Set<string>, signedDicts?: Set<any>): boolean => {
+    if (!field) return false;
+    try {
+      const name = typeof field.getName === 'function' ? field.getName() : '';
+      if (name && signedNames?.has(name)) return true;
+
+      if (typeof field.acroField?.V === 'function') {
+        const v = field.acroField.V();
+        if (v && !(v instanceof pdfLib.PDFNull)) return true;
+      }
+      if (typeof field.acroField?.getInheritableAttribute === 'function') {
+        const v = field.acroField.getInheritableAttribute(pdfLib.PDFName.of('V'));
+        if (v && !(v instanceof pdfLib.PDFNull)) return true;
+      }
+
+      const fieldDict = field.acroField?.dict;
+      if (fieldDict && signedDicts?.has(fieldDict)) return true;
+      if (isSignatureFieldSigned(fieldDict, null, doc)) return true;
+
+      const widgets = field.acroField?.getWidgets?.() || [];
+      for (const w of widgets) {
+        if (w.dict && signedDicts?.has(w.dict)) return true;
+        if (isSignatureFieldSigned(fieldDict, w.dict, doc)) return true;
+      }
+    } catch (e) {
+      console.warn("Error in checkFieldSigned:", e);
+    }
     return false;
   };
 
-  /**
-   * Trích xuất font bytes từ PDF gốc bằng pdf-lib để nhúng lại khi export.
-   * Key của map là tên font internal trong PDF (e.g. 'F1', 'ABCDEF+Arial').
-   * Sử dụng decodePDFRawStream để decode stream đã bị compress.
-   * Lưu ý: Chỉ trích xuất được font nhúng đầy đủ (không subsetted hoàn toàn).
-   */
-  const extractFontsFromPdf = async (buffer: ArrayBuffer | Uint8Array): Promise<Map<string, Uint8Array>> => {
-    const fontCache = new Map<string, Uint8Array>();
+  const safeRemoveField = (doc: any, fieldName: string) => {
     try {
-      const pdfDoc = await PDFDocument.load(new Uint8Array(buffer), { ignoreEncryption: true });
-      const pages = pdfDoc.getPages();
-      for (const page of pages) {
-        try {
-          const resources = page.node.Resources();
-          if (!resources) continue;
-          const fontDict = resources.lookup(PDFName.of('Font'), PDFDict);
-          if (!fontDict) continue;
-          for (const [key, ref] of fontDict.entries()) {
-            const fontKey = key.encodedName || (key as any).asString?.() || String(key);
-            if (fontCache.has(fontKey)) continue;
-            try {
-              const fontObj = pdfDoc.context.lookup(ref);
-              if (!(fontObj instanceof PDFDict)) continue;
-              // Tìm FontDescriptor -> FontFile/FontFile2/FontFile3
-              const descriptorRef = fontObj.get(PDFName.of('FontDescriptor'));
-              if (!descriptorRef) continue;
-              const descriptor = pdfDoc.context.lookup(descriptorRef);
-              if (!(descriptor instanceof PDFDict)) continue;
-              // Thử lần lượt FontFile2 (TrueType), FontFile (Type1), FontFile3 (OpenType)
-              for (const fileKey of ['FontFile2', 'FontFile', 'FontFile3']) {
-                const fontFileRef = descriptor.get(PDFName.of(fileKey));
-                if (!fontFileRef) continue;
-                const fontStream = pdfDoc.context.lookup(fontFileRef);
-                if (!(fontStream instanceof PDFRawStream)) continue;
-                // Lấy raw bytes từ font stream
-                // Nếu bytes là compressed sẽ không pass isFontBytes check và bị skip
-                const rawBytes = fontStream.contents;
-                if (!rawBytes || rawBytes.length === 0) continue;
-                // Chỉ lưu nếu là font hợp lệ (magic bytes TTF/OTF)
-                if (isFontBytes(rawBytes)) {
-                  fontCache.set(fontKey, rawBytes);
-                  break;
-                }
-              }
-            } catch (e) {
-              // Bỏ qua font không đọc được
-            }
-          }
-        } catch (e) {
-          // Bỏ qua trang có lỗi
+      const form = doc.getForm();
+      let field: any;
+      try {
+        field = form.getField(fieldName);
+      } catch {
+        return;
+      }
+      if (!field) return;
+
+      // Do not remove if field already has a cryptographic signature
+      if (checkFieldSigned(field, doc)) {
+        return;
+      }
+
+      const widgets = field.acroField?.getWidgets?.() || [];
+      const acroFormFields = form.acroForm.dict.get(pdfLib.PDFName.of('Fields'));
+      if (acroFormFields && typeof (acroFormFields as any).asArray === 'function') {
+        const fieldsArr = (acroFormFields as any).asArray();
+        const idx = fieldsArr.findIndex((fRef: any) => {
+          const obj = doc.context.lookup(fRef);
+          return obj === field.acroField.dict;
+        });
+        if (idx !== -1) {
+          acroFormFields.remove(idx);
         }
       }
-    } catch (e) {
-      console.warn('Không thể trích xuất font từ PDF:', e);
+
+      for (const w of widgets) {
+        for (const p of doc.getPages()) {
+          const annots = p.node.Annots();
+          if (annots) {
+            for (let i = annots.size() - 1; i >= 0; i--) {
+              const aRef = annots.get(i);
+              const aObj = doc.context.lookup(aRef);
+              if (aObj === w.dict || aRef === w.dict || (w.ref && (aRef === w.ref || aObj === w.ref))) {
+                annots.remove(i);
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Could not safely remove field:", fieldName, err);
     }
-    return fontCache;
+  };
+
+  const extractFieldsFromPdf = async (buffer: Uint8Array, pagesData: PdfPage[]): Promise<Field[]> => {
+    try {
+      const pdfDoc = await PDFDocument.load(buffer, { ignoreEncryption: true });
+      const pdfPages = pdfDoc.getPages();
+      const extracted: Field[] = [];
+      const processedWidgets = new Set<any>();
+
+      // Build comprehensive registry of digitally signed objects across the PDF
+      const signedSigRefTags = new Set<string>();
+      for (const [ref, obj] of pdfDoc.context.indirectObjects.entries()) {
+        if (obj instanceof pdfLib.PDFDict) {
+          const type = obj.get(pdfLib.PDFName.of('Type'))?.toString();
+          if (type === '/Sig' || obj.has(pdfLib.PDFName.of('ByteRange')) || obj.has(pdfLib.PDFName.of('Contents')) || obj.has(pdfLib.PDFName.of('Filter')) || obj.has(pdfLib.PDFName.of('SubFilter'))) {
+            signedSigRefTags.add(ref.toString());
+          }
+        }
+      }
+
+      const signedFieldNames = new Set<string>();
+      const signedWidgetDicts = new Set<any>();
+      const signedWidgetRefTags = new Set<string>();
+
+      for (const [ref, obj] of pdfDoc.context.indirectObjects.entries()) {
+        if (obj instanceof pdfLib.PDFDict) {
+          const v = obj.get(pdfLib.PDFName.of('V'));
+          let isSigned = false;
+          if (v) {
+            if (v instanceof pdfLib.PDFRef && signedSigRefTags.has(v.toString())) {
+              isSigned = true;
+            } else {
+              const resolved = pdfDoc.context.lookup(v);
+              if (resolved instanceof pdfLib.PDFDict) {
+                const t = resolved.get(pdfLib.PDFName.of('Type'))?.toString();
+                if (t === '/Sig' || resolved.has(pdfLib.PDFName.of('ByteRange')) || resolved.has(pdfLib.PDFName.of('Contents')) || resolved.has(pdfLib.PDFName.of('Filter')) || resolved.has(pdfLib.PDFName.of('SubFilter'))) {
+                  isSigned = true;
+                }
+              }
+            }
+          }
+
+          // Any widget with FT /Sig that has an appearance stream (/AP) or Lock is already signed
+          const ft = obj.get(pdfLib.PDFName.of('FT'))?.toString();
+          const hasAP = obj.has(pdfLib.PDFName.of('AP'));
+          if (ft === '/Sig' && hasAP) {
+            isSigned = true;
+          }
+
+          if (isSigned) {
+            signedWidgetDicts.add(obj);
+            signedWidgetRefTags.add(ref.toString());
+            const t = obj.get(pdfLib.PDFName.of('T'));
+            if (t) {
+              const nameStr = (t as any).value || (typeof (t as any).asString === 'function' ? (t as any).asString() : t.toString());
+              if (nameStr) signedFieldNames.add(nameStr.replace(/^\(|\)$/g, ''));
+            }
+            const kids = obj.get(pdfLib.PDFName.of('Kids'));
+            if (kids && typeof (kids as any).asArray === 'function') {
+              (kids as any).asArray().forEach((k: any) => {
+                if (k instanceof pdfLib.PDFRef) signedWidgetRefTags.add(k.toString());
+                const kd = pdfDoc.context.lookup(k);
+                if (kd) signedWidgetDicts.add(kd);
+              });
+            }
+          }
+        }
+      }
+
+      let formFields: any[] = [];
+      try {
+        const form = pdfDoc.getForm();
+        formFields = form.getFields();
+      } catch (e) {
+        console.warn("No AcroForm in PDF:", e);
+      }
+
+      for (const field of formFields) {
+        try {
+          const isSig = (field instanceof pdfLib.PDFSignature) || 
+                        field.constructor.name === 'PDFSignature' || 
+                        field.acroField?.dict?.get(pdfLib.PDFName.of('FT'))?.toString() === '/Sig';
+          
+          const isText = (field instanceof pdfLib.PDFTextField) || 
+                         field.constructor.name === 'PDFTextField' || 
+                         field.acroField?.dict?.get(pdfLib.PDFName.of('FT'))?.toString() === '/Tx';
+
+          if (!isSig && !isText) continue;
+
+          const name = field.getName();
+
+          // CHỈ HIỂN THỊ TRƯỜNG CHỮ KÝ CHƯA ĐƯỢC KÝ SỐ:
+          // Bỏ qua nếu trường chữ ký này đã được ký số (có giá trị /V chứa chữ ký số hoặc nằm trong danh sách đã ký)
+          const isSignedSig = isSig && (
+            (name && signedFieldNames.has(name)) ||
+            checkFieldSigned(field, pdfDoc, signedFieldNames, signedWidgetDicts)
+          );
+
+          if (isSignedSig) {
+            const widgets = field.acroField?.getWidgets?.() || [];
+            for (const w of widgets) {
+              if (w.dict) processedWidgets.add(w.dict);
+            }
+            continue;
+          }
+
+          const widgets = field.acroField?.getWidgets?.() || [];
+
+          for (const w of widgets) {
+            if (w.dict) processedWidgets.add(w.dict);
+            if (isSig && (
+              isSignedSig ||
+              (name && signedFieldNames.has(name)) ||
+              (w.dict && signedWidgetDicts.has(w.dict)) ||
+              (w.ref && signedWidgetRefTags.has(w.ref.toString())) ||
+              isSignatureFieldSigned(field.acroField?.dict, w.dict, pdfDoc)
+            )) {
+              continue;
+            }
+            const rect = w.getRectangle();
+            if (!rect || (rect.width <= 0 && rect.height <= 0)) continue;
+
+            const pRef = typeof w.P === 'function' ? w.P() : (w.P || null);
+            let pageIndex = -1;
+            if (pRef) {
+              pageIndex = pdfPages.findIndex(p => p.ref === pRef);
+            }
+            if (pageIndex === -1) {
+              pageIndex = pdfPages.findIndex(p => {
+                const annots = p.node.Annots();
+                if (!annots) return false;
+                for (let i = 0; i < annots.size(); i++) {
+                  const aRef = annots.get(i);
+                  const aObj = pdfDoc.context.lookup(aRef);
+                  if (aObj === w.dict || aRef === w.dict || (w.ref && (aRef === w.ref || aObj === w.ref))) return true;
+                }
+                return false;
+              });
+            }
+            if (pageIndex === -1) pageIndex = 0;
+
+            const page = pdfPages[pageIndex];
+            if (!page) continue;
+
+            let angle = 0;
+            try {
+              const rot = page.getRotation();
+              if (rot && typeof rot.angle === 'number') {
+                angle = rot.angle;
+              } else if (typeof rot === 'number') {
+                angle = rot;
+              }
+            } catch (e) {
+              console.error("Error getting page rotation", e);
+            }
+            angle = (angle % 360 + 360) % 360;
+
+            const { boxX, boxY, visibleWidth, visibleHeight } = getPageEffectiveDimensions(page);
+
+            const canvasPage = pagesData[pageIndex];
+            const canvasWidth = canvasPage ? canvasPage.width : visibleWidth;
+            const canvasHeight = canvasPage ? canvasPage.height : visibleHeight;
+
+            let fX = 0;
+            let fY = 0;
+            let fWidth = 0;
+            let fHeight = 0;
+
+            if (angle === 90) {
+              const scaleX = visibleHeight / canvasWidth;
+              const scaleY = visibleWidth / canvasHeight;
+              fWidth = rect.height / scaleX;
+              fHeight = rect.width / scaleY;
+              fY = (rect.x - boxX) / scaleY;
+              fX = (rect.y - boxY) / scaleX;
+            } else if (angle === 180) {
+              const scaleX = visibleWidth / canvasWidth;
+              const scaleY = visibleHeight / canvasHeight;
+              fWidth = rect.width / scaleX;
+              fHeight = rect.height / scaleY;
+              fY = (rect.y - boxY) / scaleY;
+              fX = (visibleWidth - (rect.x - boxX)) / scaleX - fWidth;
+            } else if (angle === 270) {
+              const scaleX = visibleHeight / canvasWidth;
+              const scaleY = visibleWidth / canvasHeight;
+              fWidth = rect.height / scaleX;
+              fHeight = rect.width / scaleY;
+              fY = (visibleWidth - (rect.x - boxX)) / scaleY - fHeight;
+              fX = (visibleHeight - (rect.y - boxY)) / scaleX - fWidth;
+            } else {
+              const scaleX = visibleWidth / canvasWidth;
+              const scaleY = visibleHeight / canvasHeight;
+              fWidth = rect.width / scaleX;
+              fHeight = rect.height / scaleY;
+              fX = (rect.x - boxX) / scaleX;
+              fY = (visibleHeight - (rect.y - boxY + rect.height)) / scaleY;
+            }
+
+            let textValue = '';
+            if (isText && typeof (field as any).getText === 'function') {
+              try {
+                textValue = (field as any).getText() || '';
+              } catch {}
+            }
+
+            extracted.push({
+              id: Math.random().toString(36).substring(2, 9),
+              pageIndex,
+              x: Math.round(fX),
+              y: Math.round(fY),
+              width: Math.round(fWidth),
+              height: Math.round(fHeight),
+              type: isSig ? 'signature' : 'text',
+              name,
+              originalName: name,
+              textValue,
+              fontSize: 12
+            });
+          }
+        } catch (fErr) {
+          console.warn("Error parsing form field:", fErr);
+        }
+      }
+
+      // Also scan page annotations in case there are widget annotations not picked up by form.getFields()
+      for (let pIdx = 0; pIdx < pdfPages.length; pIdx++) {
+        const page = pdfPages[pIdx];
+        const annots = page.node.Annots();
+        if (!annots) continue;
+        for (let aIdx = 0; aIdx < annots.size(); aIdx++) {
+          try {
+            const annotRef = annots.get(aIdx);
+            const annotDict = pdfDoc.context.lookup(annotRef) as any;
+            if (!annotDict || !(annotDict instanceof pdfLib.PDFDict)) continue;
+            if (processedWidgets.has(annotDict)) continue;
+
+            const subtype = annotDict.get(pdfLib.PDFName.of('Subtype'))?.toString();
+            if (subtype !== '/Widget') continue;
+
+            let parentDict: any = null;
+            const parentRef = annotDict.get(pdfLib.PDFName.of('Parent'));
+            if (parentRef) {
+              parentDict = pdfDoc.context.lookup(parentRef);
+            }
+
+            const ft = annotDict.get(pdfLib.PDFName.of('FT'))?.toString() ||
+                       parentDict?.get?.(pdfLib.PDFName.of('FT'))?.toString();
+            const isSig = ft === '/Sig';
+            const isText = ft === '/Tx';
+            if (!isSig && !isText) continue;
+
+            processedWidgets.add(annotDict);
+
+            let name = '';
+            const tEntry = annotDict.get(pdfLib.PDFName.of('T')) || parentDict?.get?.(pdfLib.PDFName.of('T'));
+            if (tEntry) {
+              if (typeof (tEntry as any).asString === 'function') {
+                name = (tEntry as any).asString();
+              } else if (typeof (tEntry as any).value === 'string') {
+                name = (tEntry as any).value;
+              }
+            }
+            if (!name) {
+              name = isSig ? `Signature${extracted.length + 1}` : `TextField${extracted.length + 1}`;
+            }
+
+            // Bỏ qua nếu trường chữ ký này đã được ký số
+            if (isSig) {
+              const cleanName = name ? name.replace(/^\(|\)$/g, '') : '';
+              const isSignedAnnot = (
+                (cleanName && signedFieldNames.has(cleanName)) ||
+                signedWidgetDicts.has(annotDict) ||
+                (parentDict && signedWidgetDicts.has(parentDict)) ||
+                (annotRef && signedWidgetRefTags.has(annotRef.toString())) ||
+                isSignatureFieldSigned(parentDict, annotDict, pdfDoc)
+              );
+              if (isSignedAnnot) {
+                continue;
+              }
+            }
+
+            const rectArray = annotDict.get(pdfLib.PDFName.of('Rect'));
+            if (!rectArray || typeof (rectArray as any).asArray !== 'function') continue;
+            const rArr = (rectArray as any).asArray().map((v: any) => typeof v.asNumber === 'function' ? v.asNumber() : (v.numberValue ?? 0));
+            if (rArr.length < 4) continue;
+            const rect = {
+              x: Math.min(rArr[0], rArr[2]),
+              y: Math.min(rArr[1], rArr[3]),
+              width: Math.abs(rArr[2] - rArr[0]),
+              height: Math.abs(rArr[3] - rArr[1]),
+            };
+            if (rect.width <= 0 && rect.height <= 0) continue;
+
+            let angle = 0;
+            try {
+              const rot = page.getRotation();
+              if (rot && typeof rot.angle === 'number') {
+                angle = rot.angle;
+              } else if (typeof rot === 'number') {
+                angle = rot;
+              }
+            } catch (e) {}
+            angle = (angle % 360 + 360) % 360;
+
+            const { boxX, boxY, visibleWidth, visibleHeight } = getPageEffectiveDimensions(page);
+            const canvasPage = pagesData[pIdx];
+            const canvasWidth = canvasPage ? canvasPage.width : visibleWidth;
+            const canvasHeight = canvasPage ? canvasPage.height : visibleHeight;
+
+            let fX = 0, fY = 0, fWidth = 0, fHeight = 0;
+            if (angle === 90) {
+              const scaleX = visibleHeight / canvasWidth;
+              const scaleY = visibleWidth / canvasHeight;
+              fWidth = rect.height / scaleX;
+              fHeight = rect.width / scaleY;
+              fY = (rect.x - boxX) / scaleY;
+              fX = (rect.y - boxY) / scaleX;
+            } else if (angle === 180) {
+              const scaleX = visibleWidth / canvasWidth;
+              const scaleY = visibleHeight / canvasHeight;
+              fWidth = rect.width / scaleX;
+              fHeight = rect.height / scaleY;
+              fY = (rect.y - boxY) / scaleY;
+              fX = (visibleWidth - (rect.x - boxX)) / scaleX - fWidth;
+            } else if (angle === 270) {
+              const scaleX = visibleHeight / canvasWidth;
+              const scaleY = visibleWidth / canvasHeight;
+              fWidth = rect.height / scaleX;
+              fHeight = rect.width / scaleY;
+              fY = (visibleWidth - (rect.x - boxX)) / scaleY - fHeight;
+              fX = (visibleHeight - (rect.y - boxY)) / scaleX - fWidth;
+            } else {
+              const scaleX = visibleWidth / canvasWidth;
+              const scaleY = visibleHeight / canvasHeight;
+              fWidth = rect.width / scaleX;
+              fHeight = rect.height / scaleY;
+              fX = (rect.x - boxX) / scaleX;
+              fY = (visibleHeight - (rect.y - boxY + rect.height)) / scaleY;
+            }
+
+            extracted.push({
+              id: Math.random().toString(36).substring(2, 9),
+              pageIndex: pIdx,
+              x: Math.round(fX),
+              y: Math.round(fY),
+              width: Math.round(fWidth),
+              height: Math.round(fHeight),
+              type: isSig ? 'signature' : 'text',
+              name,
+              originalName: name,
+              textValue: '',
+              fontSize: 12
+            });
+          } catch (e) {
+            console.warn("Error parsing annot widget:", e);
+          }
+        }
+      }
+
+      return extracted;
+    } catch (err) {
+      console.warn("Could not extract fields from PDF:", err);
+      return [];
+    }
   };
 
   const renderPdfPages = async (buffer: ArrayBuffer | Uint8Array) => {
     const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
     const parsedPages: PdfPage[] = [];
     const extractedTexts: PdfTextItem[] = [];
-    const extractedFields: Field[] = [];
 
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
@@ -465,27 +1111,69 @@ export default function App() {
 
       try {
         const textContent = await page.getTextContent();
-        textContent.items.forEach((item: any, idx: number) => {
+        const rawItems: any[] = [];
+
+        textContent.items.forEach((item: any) => {
           if (!item.str || item.str.trim() === '') return;
 
           const transform = item.transform;
           const tx = transform[4];
           const ty = transform[5];
-          
-          const [vx, vy] = viewport.convertToViewportPoint(tx, ty);
+          // Độ cao phông chữ chuẩn xác theo trục dọc (vertical scale) của PDF
+          const verticalScale = Math.sqrt(transform[2] * transform[2] + transform[3] * transform[3]);
+          const horizontalScale = Math.sqrt(transform[0] * transform[0] + transform[1] * transform[1]);
+          const fontSize = verticalScale || item.height || horizontalScale;
+          const fontProps = detectFontProperties(item, textContent, page, pdf);
 
-          const fontSize = Math.sqrt(transform[0] * transform[0] + transform[1] * transform[1]);
+          rawItems.push({
+            str: item.str,
+            tx,
+            ty,
+            width: item.width,
+            fontSize,
+            fontProps,
+          });
+        });
+
+        // Sắp xếp các đoạn văn bản theo thứ tự đọc tự nhiên: trên xuống dưới (ty giảm dần), trái sang phải (tx tăng dần)
+        rawItems.sort((a, b) => {
+          const dy = b.ty - a.ty;
+          if (Math.abs(dy) > Math.max(3, a.fontSize * 0.25)) {
+            return dy;
+          }
+          return a.tx - b.tx;
+        });
+
+        // Gộp các cụm từ liên tiếp trên cùng một dòng để người dùng có thể nhấp chọn cả câu/dòng mượt mà như Foxit
+        const mergedItems: any[] = [];
+        for (const item of rawItems) {
+          const prev = mergedItems.length > 0 ? mergedItems[mergedItems.length - 1] : null;
+          if (
+            prev &&
+            Math.abs(prev.ty - item.ty) <= Math.max(2, prev.fontSize * 0.2) &&
+            item.tx >= prev.tx - 1 &&
+            (item.tx - (prev.tx + prev.width)) <= Math.max(prev.fontSize * 1.2, 16) &&
+            prev.fontProps.fontFamily === item.fontProps.fontFamily &&
+            prev.fontProps.isBold === item.fontProps.isBold &&
+            Math.abs(prev.fontSize - item.fontSize) <= 1
+          ) {
+            const gap = item.tx - (prev.tx + prev.width);
+            const needsSpace = gap > (prev.fontSize * 0.15) && !prev.str.endsWith(' ') && !item.str.startsWith(' ');
+            prev.str += (needsSpace ? ' ' : '') + item.str;
+            prev.width = (item.tx + item.width) - prev.tx;
+          } else {
+            mergedItems.push({ ...item });
+          }
+        }
+
+        mergedItems.forEach((item, idx) => {
+          const [vx, vy] = viewport.convertToViewportPoint(item.tx, item.ty);
           const scale = viewport.scale;
           const itemWidth = item.width * scale;
-          const itemHeight = fontSize * scale;
-
-          // vy is the baseline, calculate finalY for the top-left of the box
-          const finalY = vy - itemHeight;
-
-          const styleObj = textContent.styles ? textContent.styles[item.fontName] : null;
-          const resolvedFontName = styleObj ? styleObj.fontFamily : (item.fontName || 'serif');
-          // item.fontName là tên font internal trong PDF (dùng để tra cứu font bytes)
-          const pdfInternalFontName = item.fontName || '';
+          const itemHeight = item.fontSize * scale;
+          // Căn chỉnh vị trí Y theo ascent thực tế của phông Times New Roman (khoảng 82% em-height)
+          const finalY = vy - itemHeight * 0.85;
+          const roundedSize = Math.round(item.fontSize * 10) / 10;
 
           extractedTexts.push({
             id: `text-${i - 1}-${idx}`,
@@ -494,118 +1182,77 @@ export default function App() {
             x: vx,
             y: finalY,
             width: itemWidth || 50,
-            height: itemHeight || fontSize,
-            fontSize: fontSize,
-            fontName: resolvedFontName,
-            pdfFontName: pdfInternalFontName,
+            height: itemHeight || item.fontSize,
+            fontSize: item.fontSize,
+            fontName: item.fontProps.rawName,
             pageIndex: i - 1,
             isModified: false,
-            pdfX: tx,
-            pdfY: ty,
+            pdfX: item.tx,
+            pdfY: item.ty,
             pdfWidth: item.width,
-            pdfHeight: fontSize,
-            // default custom styles
-            // Ưu tiên tin cậy tên font gốc trong PDF (pdfInternalFontName) trước để tránh PDF.js giải mã sai sang sans-serif
-            customFontFamily: 'serif', // Mặc định nhận dạng thành Times New Roman
-            customFontSize: fontSize,
-            isBold: resolvedFontName.toLowerCase().includes('bold') || pdfInternalFontName.toLowerCase().includes('bold') || false,
-            isItalic: resolvedFontName.toLowerCase().includes('italic') || resolvedFontName.toLowerCase().includes('oblique') || 
-                      pdfInternalFontName.toLowerCase().includes('italic') || pdfInternalFontName.toLowerCase().includes('oblique') || false,
+            pdfHeight: item.fontSize,
+            customFontFamily: item.fontProps.fontFamily,
+            customFontSize: roundedSize,
+            isBold: item.fontProps.isBold,
+            isItalic: item.fontProps.isItalic,
             offsetX: 0,
             offsetY: 0,
             hasBackground: true,
             customColor: '#000000',
+            rotation: 0,
+            baselineY: vy,
           });
         });
+
+        // Extract any existing highlight annotations from the PDF page
+        try {
+          const annots = await page.getAnnotations();
+          if (annots && Array.isArray(annots)) {
+            annots.forEach((annot: any) => {
+              if (annot.subtype === 'Highlight' && annot.rect) {
+                const [r0, r1, r2, r3] = annot.rect;
+                const [p1x, p1y] = viewport.convertToViewportPoint(r0, r3);
+                const [p2x, p2y] = viewport.convertToViewportPoint(r2, r1);
+                const hx = Math.min(p1x, p2x);
+                const hy = Math.min(p1y, p2y);
+                const hw = Math.abs(p2x - p1x);
+                const hh = Math.abs(p2y - p1y);
+                let hexColor = '#fde047';
+                if (annot.color && Array.isArray(annot.color)) {
+                  const r = Math.round(annot.color[0] <= 1 ? annot.color[0] * 255 : annot.color[0]);
+                  const g = Math.round(annot.color[1] <= 1 ? annot.color[1] * 255 : annot.color[1]);
+                  const b = Math.round(annot.color[2] <= 1 ? annot.color[2] * 255 : annot.color[2]);
+                  hexColor = `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+                }
+                extractedTexts.push; // no-op
+                setHighlights(prev => {
+                  const exists = prev.some(h => h.pageIndex === i - 1 && Math.abs(h.x - hx) < 5 && Math.abs(h.y - hy) < 5);
+                  if (exists) return prev;
+                  return [...prev, {
+                    id: `annot-hl-${i - 1}-${annot.id || Math.random().toString(36).substring(2, 7)}`,
+                    pageIndex: i - 1,
+                    x: hx,
+                    y: hy,
+                    width: hw,
+                    height: hh,
+                    color: hexColor,
+                    opacity: 0.45,
+                  }];
+                });
+              }
+            });
+          }
+        } catch (annotErr) {
+          // annotations not available
+        }
       } catch (err) {
         console.error(`Error extracting text content at page ${i}:`, err);
-      }
-
-      try {
-        const annotations = await page.getAnnotations();
-        let hCount = 0;
-        annotations.forEach((annot: any) => {
-          const subtype = annot.subtype || (annot.annotationType === 9 ? 'Highlight' : '');
-          if (subtype === 'Highlight' || subtype === 'Underline' || subtype === 'Square') {
-              // Highlight annotation
-            } else if (subtype === 'FreeText' || subtype === 'Tx' || annot.fieldType === 'Tx') {
-              if (annot.rect && annot.rect.length === 4) {
-                const [x1, y1, x2, y2] = annot.rect;
-                const rectInVP = viewport.convertToViewportRectangle([x1, y1, x2, y2]);
-                const vx = Math.min(rectInVP[0], rectInVP[2]);
-                const vy = Math.min(rectInVP[1], rectInVP[3]);
-                const vw = Math.abs(rectInVP[2] - rectInVP[0]);
-                const vh = Math.abs(rectInVP[3] - rectInVP[1]);
-
-                extractedFields.push({
-                  id: `native-text-${i - 1}-${hCount}`,
-                  pageIndex: i - 1,
-                  x: vx,
-                  y: vy,
-                  width: vw || 120,
-                  height: vh || 24,
-                  type: 'text',
-                  name: `Văn bản gốc ${hCount + 1}`,
-                  textValue: annot.contents || annot.fieldValue || '',
-                  fontSize: 14,
-                  fontFamily: 'sans-serif',
-                  color: '#000000',
-                  isNativeAnnot: true,
-                  nativeAnnotIndex: hCount,
-                });
-                hCount++;
-              }
-            }
-            if (subtype === 'Highlight' || subtype === 'Underline' || subtype === 'Square') {
-            if (annot.rect && annot.rect.length === 4) {
-              const [x1, y1, x2, y2] = annot.rect;
-              const rectInVP = viewport.convertToViewportRectangle([x1, y1, x2, y2]);
-              const vx = Math.min(rectInVP[0], rectInVP[2]);
-              const vy = Math.min(rectInVP[1], rectInVP[3]);
-              const vw = Math.abs(rectInVP[2] - rectInVP[0]);
-              const vh = Math.abs(rectInVP[3] - rectInVP[1]);
-
-              let colorHex = '#FFFF00';
-              if (annot.color && annot.color.length >= 3) {
-                const r = Math.round(annot.color[0] <= 1 ? annot.color[0] * 255 : annot.color[0]).toString(16).padStart(2, '0');
-                const g = Math.round(annot.color[1] <= 1 ? annot.color[1] * 255 : annot.color[1]).toString(16).padStart(2, '0');
-                const b = Math.round(annot.color[2] <= 1 ? annot.color[2] * 255 : annot.color[2]).toString(16).padStart(2, '0');
-                colorHex = `#${r}${g}${b}`;
-              }
-
-              extractedFields.push({
-                id: `native-annot-${i - 1}-${hCount}`,
-                pageIndex: i - 1,
-                x: vx,
-                y: vy,
-                width: vw || 80,
-                height: vh || 18,
-                type: 'highlight',
-                name: `Highlight gốc ${hCount + 1}`,
-                highlightColor: colorHex,
-                opacity: 0.55,
-                isNativeAnnot: true,
-                nativeAnnotIndex: hCount,
-              });
-              hCount++;
-            }
-          }
-        });
-      } catch (aErr) {
-        console.warn(`Error extracting annotations at page ${i}:`, aErr);
       }
     }
     setPages(parsedPages);
     setPdfTexts(extractedTexts);
-    setFields(extractedFields);
     setSelectedPageIndices([]);
-    // Trích xuất font gốc từ PDF để nhúng lại chính xác khi export
-    extractFontsFromPdf(buffer).then(cache => {
-      setExtractedFontCache(cache);
-      console.log(`Đã trích xuất ${cache.size} font từ PDF:`, Array.from(cache.keys()));
-    }).catch(e => {
-      console.warn('Không thể trích xuất font từ PDF:', e);
-    });
+    return parsedPages;
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -614,6 +1261,8 @@ export default function App() {
 
     setIsProcessing(true);
     setDocumentName(file.name);
+    setHighlights([]);
+    setSelectedHighlightId(null);
     try {
       const arrayBuffer = await file.arrayBuffer();
       const uint8Array = new Uint8Array(arrayBuffer);
@@ -622,8 +1271,50 @@ export default function App() {
       const isSigned = checkIsDigitallySigned(uint8Array);
       setIsDigitallySigned(isSigned);
       
-      await renderPdfPages(uint8Array);
-      setFields([]); 
+      const parsedPages = await renderPdfPages(uint8Array);
+
+      // Restore saved highlights from embedded PDF metadata or localStorage
+      let loadedHighlights: HighlightItem[] = [];
+      try {
+        const loadedPdfDoc = await PDFDocument.load(uint8Array, { ignoreEncryption: true });
+        const subject = loadedPdfDoc.getSubject();
+        if (subject && subject.includes('highlights')) {
+          const parsedMeta = JSON.parse(subject);
+          if (Array.isArray(parsedMeta.highlights) && parsedMeta.highlights.length > 0) {
+            loadedHighlights = parsedMeta.highlights;
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      if (loadedHighlights.length === 0) {
+        try {
+          const cached = localStorage.getItem(`pdf_highlights_${file.name}`);
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              loadedHighlights = parsed;
+            }
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      if (loadedHighlights.length > 0) {
+        setHighlights(loadedHighlights);
+      }
+
+      try {
+        const loadedFields = await extractFieldsFromPdf(uint8Array, parsedPages);
+        setFields(loadedFields);
+        setInitialFieldNames(loadedFields.map(f => f.name));
+      } catch (fErr) {
+        console.warn("Could not extract existing fields from PDF:", fErr);
+        setFields([]);
+        setInitialFieldNames([]);
+      }
     } catch (err) {
       console.error("Error parsing PDF", err);
       alert("Không thể đọc file PDF này.");
@@ -703,6 +1394,14 @@ export default function App() {
          }
          return t;
       }));
+
+      // Update highlights page index
+      setHighlights(highlights.filter(h => h.pageIndex !== deletePageConfirm.index).map(h => {
+         if (h.pageIndex > deletePageConfirm.index) {
+            return { ...h, pageIndex: h.pageIndex - 1 };
+         }
+         return h;
+      }));
       
       await renderPdfPages(newPdfBytes);
       setDeletePageConfirm(null);
@@ -713,59 +1412,6 @@ export default function App() {
       setIsProcessing(false);
     }
   };
-  const removeNativeHighlights = async () => {
-    if (!originalPdfBuffer) {
-      alert("Vui lòng tải một file PDF trước.");
-      return;
-    }
-    try {
-      setIsProcessing(true);
-      const pdfDoc = await PDFDocument.load(originalPdfBuffer, { ignoreEncryption: true });
-      const pages = pdfDoc.getPages();
-      let removedCount = 0;
-
-      pages.forEach(page => {
-        const annots = page.node.get(pdfLib.PDFName.of('Annots'));
-        if (annots instanceof pdfLib.PDFArray) {
-          const remainingAnnots = pdfLib.PDFArray.withContext(pdfDoc.context);
-          for (let i = 0; i < annots.size(); i++) {
-            const annotRef = annots.get(i);
-            const annotDict = pdfDoc.context.lookup(annotRef);
-            if (annotDict instanceof pdfLib.PDFDict) {
-              const subtype = annotDict.get(pdfLib.PDFName.of('Subtype'));
-              if (subtype && (
-                subtype.toString() === '/Highlight' || 
-                subtype.toString() === '/Underline' || 
-                subtype.toString() === '/StrikeOut' ||
-                subtype.toString() === '/Square'
-              )) {
-                removedCount++;
-                continue;
-              }
-            }
-            remainingAnnots.push(annotRef);
-          }
-          page.node.set(pdfLib.PDFName.of('Annots'), remainingAnnots);
-        }
-      });
-
-      const updatedPdfBytes = await pdfDoc.save();
-      setOriginalPdfBuffer(updatedPdfBytes);
-      setFields(fields.filter(f => f.type !== 'highlight'));
-      await renderPdfPages(updatedPdfBytes);
-      if (removedCount > 0) {
-        alert(`Đã xóa thành công ${removedCount} chú thích Highlight gốc trong tệp PDF!`);
-      } else {
-        alert("Đã hoàn tất kiểm tra chú thích. Để xóa các vệt highlight hoặc vết mờ bất kỳ trên trang theo ý muốn, bạn hãy bật công cụ 'Tẩy / Che nền' trên thanh công cụ và vẽ ô che màu trắng lên đúng vùng muốn tẩy.");
-      }
-    } catch (err) {
-      console.error("Error removing native highlights:", err);
-      alert("Lỗi khi xử lý xóa Highlight: " + (err as Error).message);
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
 
   const handleInsertPageBefore = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -803,6 +1449,13 @@ export default function App() {
             return { ...t, pageIndex: t.pageIndex + numInserted };
          }
          return t;
+      }));
+
+      setHighlights(highlights.map(h => {
+         if (h.pageIndex >= insertTargetIndex) {
+            return { ...h, pageIndex: h.pageIndex + numInserted };
+         }
+         return h;
       }));
 
       await renderPdfPages(newPdfBytes);
@@ -872,6 +1525,16 @@ export default function App() {
           return { ...t, pageIndex: index };
         }
         return t;
+      }));
+
+      // Update highlights:
+      setHighlights(highlights.map(h => {
+        if (h.pageIndex === index) {
+          return { ...h, pageIndex: targetIndex };
+        } else if (h.pageIndex === targetIndex) {
+          return { ...h, pageIndex: index };
+        }
+        return h;
       }));
 
       await renderPdfPages(newPdfBytes);
@@ -947,6 +1610,13 @@ export default function App() {
         return t;
       }));
 
+      setHighlights(highlights.map(h => {
+        if (indexMap.has(h.pageIndex)) {
+          return { ...h, pageIndex: indexMap.get(h.pageIndex)! };
+        }
+        return h;
+      }));
+
       setSelectedPageIndices([]);
       await renderPdfPages(newPdfBytes);
     } catch (error) {
@@ -998,6 +1668,10 @@ export default function App() {
          return { ...t, pageIndex: indexMap.get(t.pageIndex)! };
       }));
 
+      setHighlights(highlights.filter(h => !indices.includes(h.pageIndex)).map(h => {
+         return { ...h, pageIndex: indexMap.get(h.pageIndex)! };
+      }));
+
       setSelectedPageIndices([]);
       await renderPdfPages(newPdfBytes);
     } catch (e) {
@@ -1008,58 +1682,41 @@ export default function App() {
     }
   };
 
-  const handleRotatePages = async (pageIndices: number[], direction: 'cw' | 'ccw' | '180') => {
-    if (!originalPdfBuffer) return;
-    if (isDigitallySigned) {
-      alert("Tài liệu hiện tại đã được ký số. Việc xoay trang đã bị khóa để tránh làm hỏng chữ ký số.");
-      return;
-    }
-    if (pageIndices.length === 0) return;
-
-    setIsProcessing(true);
-    try {
-      const pdfDoc = await PDFDocument.load(originalPdfBuffer, { ignoreEncryption: true });
-      const pdfPages = pdfDoc.getPages();
-
-      const delta = direction === 'cw' ? 90 : (direction === 'ccw' ? -90 : 180);
-
-      for (const idx of pageIndices) {
-        if (idx >= 0 && idx < pdfPages.length) {
-          const page = pdfPages[idx];
-          const currentRot = page.getRotation();
-          let currentAngle = 0;
-          if (currentRot && typeof currentRot.angle === 'number') {
-            currentAngle = currentRot.angle;
-          } else if (typeof currentRot === 'number') {
-            currentAngle = currentRot;
-          }
-          const newAngle = (currentAngle + delta + 360) % 360;
-          page.setRotation(degrees(newAngle));
-        }
-      }
-
-      const newPdfBytes = await pdfDoc.save();
-      setOriginalPdfBuffer(newPdfBytes);
-
-      await renderPdfPages(newPdfBytes);
-    } catch (err) {
-      console.error('Error rotating pages:', err);
-      alert("Không thể xoay trang PDF.");
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
   const handleSaveTextEdit = (id: string, newText: string) => {
-    setPdfTexts(prev => prev.map(t => {
+    let measuredWidth = 0;
+    try {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const target = pdfTexts.find(item => item.id === id);
+        const fontSize = (target?.customFontSize || target?.fontSize || 13) * 1.5;
+        const fontFamily = target?.customFontFamily || 'Times New Roman';
+        const isBold = target?.isBold;
+        const isItalic = target?.isItalic;
+        ctx.font = `${isItalic ? 'italic ' : ''}${isBold ? '700 ' : '400 '}${fontSize}px "${fontFamily}", "Times New Roman", serif`;
+        measuredWidth = ctx.measureText(newText).width;
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    setPdfTexts(pdfTexts.map(t => {
       if (t.id === id) {
         const isModified = newText !== t.originalText;
-        return { ...t, text: newText, isModified };
+        return { 
+          ...t, 
+          text: newText, 
+          isModified,
+          width: measuredWidth > 0 ? Math.max(measuredWidth, t.width) : t.width
+        };
       }
       return t;
     }));
     setEditingTextId(null);
-    // Giữ sidebar mở nếu đang hiển thị (không xóa selectedTextId)
+  };
+
+  const handleTextPropChange = (id: string, updates: Partial<PdfTextItem>) => {
+    setPdfTexts(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
   };
 
   const handleRestoreText = (id: string) => {
@@ -1068,12 +1725,8 @@ export default function App() {
         return { 
           ...t, 
           text: t.originalText, 
+          width: (t as any).originalWidth || t.width,
           isModified: false,
-          customFontFamily: undefined,
-          customFontSize: undefined,
-          customColor: undefined,
-          isBold: undefined,
-          isItalic: undefined,
           offsetX: 0,
           offsetY: 0,
           hasBackground: true,
@@ -1086,37 +1739,35 @@ export default function App() {
   };
 
   const handleMouseDown = (e: React.MouseEvent, pageIndex: number) => {
-    if (isDigitallySigned) {
-      alert("Tài liệu này đã được ký số. Không thể thêm trường chữ ký, văn bản hoặc highlight mới.");
-      return;
-    }
     if (activeTool === 'Select') {
       setSelectedFieldId(null);
+      setSelectedHighlightId(null);
       return;
     }
-    if (activeTool !== 'Signature Field' && activeTool !== 'Text Field' && activeTool !== 'Add Text' && activeTool !== 'Highlight') return;
+    if (activeTool !== 'Signature Field' && activeTool !== 'Text Field' && activeTool !== 'Highlight') return;
+    if (isDigitallySigned && (activeTool === 'Signature Field' || activeTool === 'Text Field')) {
+      alert("Tài liệu này đã được ký số. Không thể thêm trường chữ ký hoặc trường văn bản mới.");
+      return;
+    }
     
     setSelectedFieldId(null);
+    setSelectedHighlightId(null);
     const pageElement = e.currentTarget as HTMLDivElement;
     const rect = pageElement.getBoundingClientRect();
     if (!rect) return;
     
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const x = (e.clientX - rect.left) / zoom;
+    const y = (e.clientY - rect.top) / zoom;
     setDrawing({ pageIndex, startX: x, startY: y, currentX: x, currentY: y });
   };
 
   const handleResizeDown = (e: React.MouseEvent, f: Field, type: 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw') => {
-      if (isDigitallySigned) {
-          alert("Tài liệu này đã được ký số. Việc thay đổi kích thước trường đã bị khóa.");
-          return;
-      }
       e.stopPropagation();
-      const pageElement = (e.currentTarget as HTMLElement).closest('.relative.flex-shrink-0') as HTMLDivElement;
+      const pageElement = (e.currentTarget as HTMLElement).closest('[id^="page-"]') as HTMLDivElement;
       if (pageElement) {
           const rect = pageElement.getBoundingClientRect();
-          const startX = e.clientX - rect.left;
-          const startY = e.clientY - rect.top;
+          const startX = (e.clientX - rect.left) / zoom;
+          const startY = (e.clientY - rect.top) / zoom;
           setFieldInteraction({
               id: f.id,
               type,
@@ -1136,8 +1787,54 @@ export default function App() {
       setFieldInteraction(null);
       return;
     }
+    if (highlightInteraction) {
+      setHighlightInteraction(null);
+      return;
+    }
     
     if (!drawing) return;
+
+    if (activeTool === 'Highlight') {
+      let width = Math.abs(drawing.currentX - drawing.startX);
+      let height = Math.abs(drawing.currentY - drawing.startY);
+      let x = Math.min(drawing.startX, drawing.currentX);
+      let y = Math.min(drawing.startY, drawing.currentY);
+      
+      if (width < 5 || height < 5) {
+        // Single click: find if clicked over a text item on this page
+        const clickedText = pdfTexts.find(t => 
+          t.pageIndex === drawing.pageIndex &&
+          x >= t.x - 6 && x <= t.x + t.width + 6 &&
+          y >= t.y - 6 && y <= t.y + t.height + 6
+        );
+        if (clickedText) {
+          x = clickedText.x - 2;
+          y = clickedText.y;
+          width = clickedText.width + 4;
+          height = Math.max(clickedText.height, clickedText.fontSize * 1.35);
+        } else {
+          width = 120;
+          height = 22;
+        }
+      }
+
+      if (width > 3 && height > 3) {
+        const newId = `hl-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+        setHighlights(prev => [...prev, {
+          id: newId,
+          pageIndex: drawing.pageIndex,
+          x,
+          y,
+          width,
+          height,
+          color: highlightColor,
+          opacity: highlightOpacity,
+        }]);
+        setSelectedHighlightId(newId);
+      }
+      setDrawing(null);
+      return;
+    }
     
     let width = Math.abs(drawing.currentX - drawing.startX);
     let height = Math.abs(drawing.currentY - drawing.startY);
@@ -1145,16 +1842,8 @@ export default function App() {
     let y = Math.min(drawing.startY, drawing.currentY);
     
     if (width < 5 || height < 5) {
-      if (activeTool === 'Text Field' || activeTool === 'Add Text') {
-        width = 160;
-        height = 36;
-      } else if (activeTool === 'Highlight') {
-        width = 120;
-        height = 24;
-      } else {
-        width = 120;
-        height = 50;
-      }
+      width = activeTool === 'Text Field' ? 150 : 120;
+      height = activeTool === 'Text Field' ? 30 : 50;
     }
     
     if (width > 5 && height > 5) {
@@ -1167,32 +1856,20 @@ export default function App() {
           x, y, width, height,
           type: 'signature',
           name: defaultName,
+          originalName: defaultName,
         }]);
         setSelectedFieldId(newId);
-      } else if (activeTool === 'Text Field' || activeTool === 'Add Text') {
-        const defaultName = `Văn bản ${fields.filter(f => f.type === 'text').length + 1}`;
+      } else if (activeTool === 'Text Field') {
+        const defaultName = `TextField${fields.filter(f => f.type === 'text').length + 1}`;
         setFields([...fields, {
           id: newId,
           pageIndex: drawing.pageIndex,
           x, y, width, height,
           type: 'text',
           name: defaultName,
+          originalName: defaultName,
           textValue: '',
-          fontSize: 14,
-          fontFamily: 'sans-serif',
-          color: '#000000',
-        }]);
-        setSelectedFieldId(newId);
-      } else if (activeTool === 'Highlight') {
-        const defaultName = `Highlight_${fields.filter(f => f.type === 'highlight').length + 1}`;
-        setFields([...fields, {
-          id: newId,
-          pageIndex: drawing.pageIndex,
-          x, y, width, height,
-          type: 'highlight',
-          name: defaultName,
-          highlightColor: '#FFFF00',
-          opacity: 0.55,
+          fontSize: 12,
         }]);
         setSelectedFieldId(newId);
       }
@@ -1202,22 +1879,7 @@ export default function App() {
   };
 
   const deleteField = (id: string) => {
-    if (isDigitallySigned) {
-      alert("Tài liệu này đã được ký số. Việc xóa trường đã bị khóa.");
-      return;
-    }
     setFields(fields.filter(f => f.id !== id));
-  };
-
-  const dataUrlToUint8Array = (dataUrl: string): Uint8Array => {
-    const parts = dataUrl.split(',');
-    const base64 = parts.length > 1 ? parts[1] : parts[0];
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
   };
 
   const exportToPDF = async (customFilename?: string) => {
@@ -1244,7 +1906,7 @@ export default function App() {
       const safeSansBold = fontSansBold || safeSansRegular;
       const safeSansItalic = fontSansItalic || safeSansRegular;
 
-      // Embed fallback fonts (Tinos/Roboto) - chỉ dùng khi không có font gốc
+      // Embed all custom fonts for high-quality Vietnamese text
       const embeddedSerifRegular = safeSerifRegular ? await pdfDoc.embedFont(safeSerifRegular) : await pdfDoc.embedFont(pdfLib.StandardFonts.TimesRoman);
       const embeddedSerifBold = safeSerifBold ? await pdfDoc.embedFont(safeSerifBold) : await pdfDoc.embedFont(pdfLib.StandardFonts.TimesRomanBold);
       const embeddedSerifItalic = safeSerifItalic ? await pdfDoc.embedFont(safeSerifItalic) : await pdfDoc.embedFont(pdfLib.StandardFonts.TimesRomanItalic);
@@ -1252,49 +1914,6 @@ export default function App() {
       const embeddedSansRegular = safeSansRegular ? await pdfDoc.embedFont(safeSansRegular) : await pdfDoc.embedFont(pdfLib.StandardFonts.Helvetica);
       const embeddedSansBold = safeSansBold ? await pdfDoc.embedFont(safeSansBold) : await pdfDoc.embedFont(pdfLib.StandardFonts.HelveticaBold);
       const embeddedSansItalic = safeSansItalic ? await pdfDoc.embedFont(safeSansItalic) : await pdfDoc.embedFont(pdfLib.StandardFonts.HelveticaOblique);
-
-      // Cache font gốc đã embed để tránh embed lại nhiều lần
-      const embeddedOriginalFontCache = new Map<string, pdfLib.PDFFont>();
-
-      /**
-       * Lấy font đã nhúng theo thứ tự ưu tiên:
-       * 1. Font user đã upload (chính xác nhất)
-       * 2. Font gốc trích xuất từ PDF (nếu không bị subset)
-       * 3. Fallback: Tinos (serif) / Roboto (sans-serif)
-       */
-      const getEmbeddedFont = async (
-        pdfFontName: string | undefined,
-        isSerif: boolean,
-        isBold: boolean,
-        isItalic: boolean
-      ): Promise<pdfLib.PDFFont> => {
-        // Ưu tiên 1: Font do người dùng chủ động tải lên (.ttf/.otf)
-        if (userUploadedFontBytes && userUploadedFontBytes.length > 0) {
-          const userCacheKey = `user|${isBold}|${isItalic}`;
-          if (embeddedOriginalFontCache.has(userCacheKey)) {
-            return embeddedOriginalFontCache.get(userCacheKey)!;
-          }
-          try {
-            const embedded = await pdfDoc.embedFont(userUploadedFontBytes);
-            embeddedOriginalFontCache.set(userCacheKey, embedded);
-            return embedded;
-          } catch (e) {
-            console.warn('Không thể embed font user đã upload, dùng fallback chuẩn:', e);
-          }
-        }
-
-        // Ưu tiên 2: Sử dụng các bộ font TrueType Việt hóa chất lượng cao (Arimo cho sans-serif, Tinos cho serif)
-        // để tránh lỗi font gốc của PDF bị subset thiếu ký tự tiếng Việt gõ mới.
-        if (isSerif) {
-          if (isBold) return embeddedSerifBold;
-          if (isItalic) return embeddedSerifItalic;
-          return embeddedSerifRegular;
-        } else {
-          if (isBold) return embeddedSansBold;
-          if (isItalic) return embeddedSansItalic;
-          return embeddedSansRegular;
-        }
-      };
 
       const hexToRgb = (hex: string) => {
         const cleanHex = (hex || '#000000').replace('#', '');
@@ -1322,24 +1941,41 @@ export default function App() {
             const fontSizeToUse = t.customFontSize || t.pdfHeight;
 
             // Draw white box to whiteout/erase old text if hasBackground is true
+            // Choose font based on user settings (Times New Roman, Arial, Roboto, etc.)
+            const fontNameLower = (t.customFontFamily || t.fontName || '').toLowerCase();
+            const isSans = fontNameLower.includes('sans') || fontNameLower.includes('arial') || fontNameLower.includes('roboto') || fontNameLower.includes('helvetica') || fontNameLower.includes('calibri');
+            let fontToUse;
+            if (isSans) {
+              if (t.isBold) fontToUse = embeddedSansBold;
+              else if (t.isItalic) fontToUse = embeddedSansItalic;
+              else fontToUse = embeddedSansRegular;
+            } else {
+              if (t.isBold) fontToUse = embeddedSerifBold;
+              else if (t.isItalic) fontToUse = embeddedSerifItalic;
+              else fontToUse = embeddedSerifRegular;
+            }
+
+            // Draw white box to whiteout/erase old text if hasBackground is true
             if (t.hasBackground !== false) {
+              let textWidthInPdf = t.pdfWidth * 1.05 + 2;
+              try {
+                const computedWidth = fontToUse.widthOfTextAtSize(t.text, fontSizeToUse);
+                if (computedWidth > 0) {
+                  textWidthInPdf = Math.max(textWidthInPdf, computedWidth + 4);
+                }
+              } catch (e) {
+                // ignore
+              }
+
               page.drawRectangle({
                  x: finalPdfX - 1,
                  y: finalPdfY - fontSizeToUse * 0.25,
-                 width: t.pdfWidth * 1.05 + 2,
-                 height: fontSizeToUse * 1.3,
+                 width: textWidthInPdf,
+                 height: fontSizeToUse * 1.35,
                  color: pdfLib.rgb(1, 1, 1),
                  rotate: pdfLib.degrees(t.rotation || 0),
               });
             }
-
-            // Xác định loại font (serif/sans) để fallback
-            const isSerif = t.customFontFamily === 'serif' || (t.customFontFamily !== 'sans-serif' && getIsSerif(t.fontName));
-            const isBold = t.isBold || false;
-            const isItalic = t.isItalic || false;
-
-            // Ưu tiên font gốc từ PDF, fallback về Tinos/Roboto
-            const fontToUse = await getEmbeddedFont(t.pdfFontName, isSerif, isBold, isItalic);
 
             // Draw new edited text
             page.drawText(t.text, {
@@ -1352,6 +1988,17 @@ export default function App() {
             });
          }
       }
+
+      // Clean up fields that were previously present or are being overwritten/renamed
+      const namesToRemove = new Set<string>(initialFieldNames);
+      fields.forEach(f => {
+        if (f.originalName) namesToRemove.add(f.originalName);
+        namesToRemove.add(f.name);
+        namesToRemove.add(f.id);
+      });
+      namesToRemove.forEach(fieldName => {
+        safeRemoveField(pdfDoc, fieldName);
+      });
 
       let hasSig = false;
       for (let i = 0; i < fields.length; i++) {
@@ -1445,16 +2092,6 @@ export default function App() {
           });
           
           if (f.type === 'signature') {
-            // Remove existing signature/field with same name to allow overwriting
-            try {
-              const existingField = form.getField(f.name);
-              if (existingField) {
-                form.removeField(existingField);
-              }
-            } catch (e) {
-              // Ignore if field doesn't exist
-            }
-
             const signatureFields: any = {
               Type: 'Annot',
               Subtype: 'Widget',
@@ -1478,69 +2115,21 @@ export default function App() {
             hasSig = true;
           } else if (f.type === 'text') {
             try {
-              const isSerif = f.fontFamily === 'serif';
-              const fontToUse = await getEmbeddedFont(undefined, isSerif, !!f.isBold, !!f.isItalic);
-              const sizeToUse = f.fontSize || 12;
-              const colorToUse = hexToRgb(f.color || '#000000');
-
-              if (f.textValue && f.textValue.trim()) {
-                const lines = f.textValue.split('\n');
-                lines.forEach((lineText, lineIdx) => {
-                  const lineY = fieldY + fieldHeight - (sizeToUse * 1.05) - (lineIdx * sizeToUse * 1.2);
-                  page.drawText(lineText, {
-                    x: fieldX + 2,
-                    y: lineY,
-                    size: sizeToUse,
-                    font: fontToUse,
-                    color: colorToUse,
-                  });
-
-                  if (f.isUnderline && lineText.trim()) {
-                    const textWidth = fontToUse.widthOfTextAtSize(lineText, sizeToUse);
-                    page.drawLine({
-                      start: { x: fieldX + 2, y: lineY - 2 },
-                      end: { x: fieldX + 2 + textWidth, y: lineY - 2 },
-                      thickness: Math.max(1, sizeToUse * 0.07),
-                      color: colorToUse,
-                    });
-                  }
-                });
-              } else {
-                try {
-                  const existingField = form.getField(f.id);
-                  if (existingField) {
-                    form.removeField(existingField);
-                  }
-                } catch (e) {}
-
-                const textField = form.createTextField(f.id);
-                textField.setText(f.name);
-                textField.addToPage(page, {
-                  x: fieldX,
-                  y: fieldY,
-                  width: fieldWidth,
-                  height: fieldHeight,
-                });
-                textField.setFontSize(sizeToUse);
-              }
-            } catch (err) {
-              console.error("Error creating text field:", err);
-            }
-          } else if (f.type === 'highlight') {
-            try {
-              const highlightColor = hexToRgb(f.highlightColor || '#FFFF00');
-              const opacity = f.opacity !== undefined ? f.opacity : 0.55;
-              page.drawRectangle({
+              const textField = form.createTextField(f.id);
+              textField.setText(f.textValue || '');
+              
+              textField.addToPage(page, {
                 x: fieldX,
                 y: fieldY,
                 width: fieldWidth,
                 height: fieldHeight,
-                color: highlightColor,
-                opacity: opacity,
-                blendMode: pdfLib.BlendMode.Multiply,
               });
+              
+              if (f.fontSize) {
+                textField.setFontSize(f.fontSize);
+              }
             } catch (err) {
-              console.error("Error creating highlight rectangle:", err);
+              console.error("Error creating text field:", err);
             }
           }
         }
@@ -1549,8 +2138,61 @@ export default function App() {
       if (hasSig) {
         form.acroForm.dict.set(pdfLib.PDFName.of('SigFlags'), pdfLib.PDFNumber.of(3));
       }
+
+      // Draw all highlight boxes onto exported PDF pages
+      for (let pIdx = 0; pIdx < pdfPages.length; pIdx++) {
+        const page = pdfPages[pIdx];
+        const { width, height } = page.getSize();
+        
+        let boxX = 0;
+        let boxY = 0;
+        let visibleWidth = width;
+        let visibleHeight = height;
+        try {
+          const cropBox = page.getCropBox();
+          if (cropBox) {
+            boxX = cropBox.x || 0;
+            boxY = cropBox.y || 0;
+            visibleWidth = cropBox.width;
+            visibleHeight = cropBox.height;
+          }
+        } catch (e) {
+          // ignore
+        }
+
+        const parsedPage = pages[pIdx];
+        if (!parsedPage) continue;
+        const scaleX = visibleWidth / parsedPage.width;
+        const scaleY = visibleHeight / parsedPage.height;
+
+        const pageHighlights = highlights.filter(h => h.pageIndex === pIdx);
+        for (const h of pageHighlights) {
+          const pdfHlX = boxX + (h.x * scaleX);
+          const pdfHlY = boxY + (visibleHeight - (h.y + h.height) * scaleY);
+          const pdfHlW = h.width * scaleX;
+          const pdfHlH = h.height * scaleY;
+
+          page.drawRectangle({
+            x: pdfHlX,
+            y: pdfHlY,
+            width: pdfHlW,
+            height: pdfHlH,
+            color: hexToRgb(h.color),
+            opacity: h.opacity || 0.45,
+          });
+        }
+      }
+
+      // Embed highlights metadata into PDF so they can be reopened and deleted later
+      try {
+        pdfDoc.setSubject(JSON.stringify({ v: 1, highlights }));
+      } catch (metaErr) {
+        console.warn("Could not embed highlights metadata:", metaErr);
+      }
       
       const pdfBytes = await pdfDoc.save();
+      setInitialFieldNames(fields.map(f => f.name));
+      setFields(fields.map(f => ({ ...f, originalName: f.name })));
       const blob = new Blob([pdfBytes], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1559,6 +2201,14 @@ export default function App() {
       const rawName = customFilename || documentName;
       const downloadName = rawName.endsWith('.pdf') ? rawName : `${rawName}.pdf`;
       a.download = downloadName;
+
+      try {
+        localStorage.setItem(`pdf_highlights_${downloadName}`, JSON.stringify(highlights));
+        localStorage.setItem(`pdf_highlights_${rawName}`, JSON.stringify(highlights));
+        localStorage.setItem(`pdf_highlights_${documentName}`, JSON.stringify(highlights));
+      } catch (e) {
+        // ignore
+      }
       
       document.body.appendChild(a);
       a.click();
@@ -1567,424 +2217,13 @@ export default function App() {
       
     } catch(err) {
       console.error(err);
-      alert("Không thể xuất file PDF: " + (err as Error).message);
+      alert("Không thể xuất file PDF.");
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const renderFormattingSidebar = () => {
-    if (!selectedTextId) return null;
-    const item = pdfTexts.find(t => t.id === selectedTextId);
-    if (!item) return null;
-
-    const handleTextPropChange = (id: string, updates: Partial<PdfTextItem>) => {
-      setPdfTexts(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
-    };
-
-    return (
-      <div className="w-80 bg-white border-l border-gray-300 flex flex-col shadow-2xl z-40 overflow-y-auto">
-        {/* Sidebar Header */}
-        <div className="bg-gradient-to-r from-indigo-700 to-purple-700 text-white p-4 flex justify-between items-center shadow-md flex-shrink-0">
-          <div className="flex items-center gap-1.5 font-bold text-sm">
-            <Edit className="w-4 h-4" />
-            <span>Định dạng chữ đã chọn</span>
-          </div>
-          <button 
-            onClick={() => setSelectedTextId(null)}
-            className="text-white/80 hover:text-white p-1 hover:bg-white/10 rounded-full transition-colors cursor-pointer"
-            title="Đóng bảng định dạng"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Sidebar Content */}
-        <div className="p-4 flex flex-col gap-5 text-xs text-gray-700 flex-1">
-          {/* Info: chỉnh sửa trực tiếp */}
-          <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 flex items-start gap-2">
-            <span className="text-blue-500 text-base mt-0.5">✏️</span>
-            <div>
-              <p className="text-[11px] text-blue-800 font-semibold leading-snug">Chỉnh sửa trực tiếp</p>
-              <p className="text-[10px] text-blue-600 leading-snug mt-0.5">Nhấp thẳng vào chữ trên trang để gõ chỉnh sửa. Font tự động nhận dạng từ PDF.</p>
-              <button
-                onClick={() => setEditingTextId(item.id)}
-                className="mt-1.5 text-[10px] bg-blue-600 text-white px-2.5 py-1 rounded font-semibold hover:bg-blue-700 transition-colors cursor-pointer"
-              >
-                📝 Mở chỉnh sửa ngay
-              </button>
-            </div>
-          </div>
-
-          {/* Font / Phông chữ khi xuất */}
-          <div className="flex flex-col gap-1.5">
-            <span className="font-bold text-gray-800 flex items-center gap-1">🔤 Phông chữ khi xuất:</span>
-
-            {userUploadedFontBytes ? (
-              /* Font user đã upload */
-              <div className="flex items-center gap-2 bg-green-50 border border-green-300 rounded px-2 py-1.5">
-                <span className="text-green-700 text-[10px] font-semibold flex-1 truncate">
-                  ✅ Font tùy chỉnh: <span className="font-mono">{userUploadedFontName}</span>
-                </span>
-                <button
-                  onClick={() => { setUserUploadedFontBytes(null); setUserUploadedFontName(''); }}
-                  className="text-red-400 hover:text-red-600 transition-colors text-[10px] font-bold cursor-pointer"
-                  title="Xóa font đã upload"
-                >✕</button>
-              </div>
-            ) : (
-              /* Font tự nhận dạng + tùy chọn override */
-              <div className="bg-gray-50 border border-gray-200 rounded px-2 py-1.5 text-[10px]">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-gray-500">Font nhận dạng:</span>
-                  <span className="font-mono text-indigo-700 font-semibold truncate max-w-[120px]">
-                    {(item.fontName || '').replace(/^[A-Z]{6}\+/, '') || '(không rõ)'}
-                  </span>
-                </div>
-                <div className="flex gap-1.5">
-                  <button
-                    onClick={() => handleTextPropChange(item.id, { customFontFamily: undefined, isModified: true })}
-                    className={`flex-1 py-1 border rounded text-center transition-all cursor-pointer text-[10px] ${
-                      !item.customFontFamily
-                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700 font-bold'
-                        : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
-                    }`}
-                  >
-                    Tự động
-                  </button>
-                  <button
-                    onClick={() => handleTextPropChange(item.id, { customFontFamily: 'serif', isModified: true })}
-                    className={`flex-1 py-1 border rounded text-center transition-all cursor-pointer text-[10px] ${
-                      (!item.customFontFamily || item.customFontFamily === 'serif')
-                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700 font-bold shadow-xs'
-                        : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
-                    }`}
-                    title="Phông Times New Roman (Mặc định)"
-                  >
-                    Times New Roman (Có chân)
-                  </button>
-                  <button
-                    onClick={() => handleTextPropChange(item.id, { customFontFamily: 'sans-serif', isModified: true })}
-                    className={`flex-1 py-1 border rounded text-center transition-all cursor-pointer text-[10px] ${
-                      item.customFontFamily === 'sans-serif'
-                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700 font-bold shadow-xs'
-                        : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
-                    }`}
-                    title="Phông Arial (Không chân)"
-                  >
-                    Arial (Không chân)
-                  </button>
-                  <button
-                    onClick={() => handleTextPropChange(item.id, { customFontFamily: 'monospace', isModified: true })}
-                    className={`flex-1 py-1 border rounded text-center transition-all cursor-pointer text-[10px] ${
-                      item.customFontFamily === 'monospace'
-                        ? 'border-indigo-600 bg-indigo-50 text-indigo-700 font-bold shadow-xs'
-                        : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
-                    }`}
-                    title="Phông Courier New"
-                  >
-                    Courier New
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Upload font file (gọn lại) */}
-            <label className="flex items-center gap-1.5 cursor-pointer text-[10px] text-indigo-600 hover:text-indigo-800 transition-colors mt-0.5">
-              <span>⬆ Tải font file (.ttf/.otf) để xuất đúng font</span>
-              <input
-                type="file"
-                accept=".ttf,.otf,.woff"
-                className="hidden"
-                onChange={async (e) => {
-                  const file = e.target.files?.[0];
-                  if (!file) return;
-                  try {
-                    const buf = await file.arrayBuffer();
-                    setUserUploadedFontBytes(new Uint8Array(buf));
-                    setUserUploadedFontName(file.name);
-                  } catch(err) {
-                    alert('Không thể đọc file font.');
-                  }
-                  e.target.value = '';
-                }}
-              />
-            </label>
-          </div>
-
-          {/* Font Weight & Styles */}
-          <div className="flex flex-col gap-1.5">
-            <span className="font-bold text-gray-800 flex items-center gap-1">💅 Kiểu chữ:</span>
-            <div className="grid grid-cols-2 gap-2">
-              <button 
-                onClick={() => handleTextPropChange(item.id, { isBold: !item.isBold, isModified: true })}
-                className={`py-1.5 px-3 border rounded font-bold text-center transition-all cursor-pointer text-[11px] ${
-                  item.isBold 
-                    ? 'border-indigo-600 bg-indigo-50 text-indigo-700 shadow-sm font-bold' 
-                    : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
-                }`}
-              >
-                Chữ Đậm (B)
-              </button>
-              <button 
-                onClick={() => handleTextPropChange(item.id, { isItalic: !item.isItalic, isModified: true })}
-                className={`py-1.5 px-3 border rounded italic font-semibold text-center transition-all cursor-pointer text-[11px] ${
-                  item.isItalic 
-                    ? 'border-indigo-600 bg-indigo-50 text-indigo-700 shadow-sm font-bold' 
-                    : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
-                }`}
-              >
-                Chữ Nghiêng (I)
-              </button>
-            </div>
-          </div>
-
-          {/* Font Size Selector */}
-          <div className="flex flex-col gap-1.5">
-            <div className="flex justify-between items-center">
-              <span className="font-bold text-gray-800">📏 Cỡ chữ:</span>
-              <span className="font-mono bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded text-[11px] font-bold">
-                {Math.round(item.customFontSize || item.fontSize)} pt
-              </span>
-            </div>
-            <div className="flex items-center gap-3">
-              <input 
-                type="range"
-                min={Math.max(4, Math.round(item.fontSize * 0.4))}
-                max={Math.min(72, Math.round(item.fontSize * 3))}
-                step={0.5}
-                value={item.customFontSize || item.fontSize}
-                onChange={(e) => handleTextPropChange(item.id, { customFontSize: parseFloat(e.target.value), isModified: true })}
-                className="flex-1 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
-              />
-              <input 
-                type="number"
-                min={2}
-                max={150}
-                value={Math.round(item.customFontSize || item.fontSize)}
-                onChange={(e) => handleTextPropChange(item.id, { customFontSize: parseInt(e.target.value) || item.fontSize, isModified: true })}
-                className="w-12 border border-gray-300 rounded px-1 py-0.5 text-center font-mono outline-none text-[11px] bg-white text-gray-800"
-              />
-            </div>
-          </div>
-
-          {/* Color Selection */}
-          <div className="flex flex-col gap-1.5">
-            <span className="font-bold text-gray-800 flex items-center gap-1">🎨 Màu chữ:</span>
-            <div className="flex items-center gap-2">
-              {['#000000', '#FF0000', '#0000FF', '#008000'].map(color => (
-                <button
-                  key={color}
-                  onClick={() => handleTextPropChange(item.id, { customColor: color, isModified: true })}
-                  className="w-6 h-6 rounded-full border border-gray-300 flex items-center justify-center transition-transform hover:scale-110 shadow-xs cursor-pointer"
-                  style={{ backgroundColor: color }}
-                >
-                  {(item.customColor || '#000000') === color && (
-                    <span className="w-1.5 h-1.5 bg-white rounded-full"></span>
-                  )}
-                </button>
-              ))}
-              <div className="flex items-center gap-1.5 ml-auto border border-gray-300 rounded px-2 py-1 bg-gray-50/50">
-                <input 
-                  type="color" 
-                  value={item.customColor || '#000000'}
-                  onChange={(e) => handleTextPropChange(item.id, { customColor: e.target.value, isModified: true })}
-                  className="w-4 h-4 rounded border-0 cursor-pointer p-0 bg-transparent"
-                />
-                <input 
-                  type="text" 
-                  value={item.customColor || '#000000'}
-                  onChange={(e) => handleTextPropChange(item.id, { customColor: e.target.value, isModified: true })}
-                  className="w-16 text-[10px] uppercase outline-none bg-transparent font-mono text-gray-800"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Background Whiteout Toggle */}
-          <div className="flex flex-col gap-1.5 border-t border-gray-200 pt-3">
-            <label className="flex items-center gap-2 cursor-pointer select-none font-semibold text-gray-800">
-              <input 
-                type="checkbox" 
-                checked={item.hasBackground !== false} 
-                onChange={(e) => handleTextPropChange(item.id, { hasBackground: e.target.checked, isModified: true })}
-                className="w-3.5 h-3.5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
-              />
-              <span>Đè lên chữ gốc (Xóa nền chữ gốc)</span>
-            </label>
-            <p className="text-[10px] text-gray-400 leading-normal pl-5">
-              * Che vùng chữ cũ bên dưới bằng hộp trắng trước khi đè chữ mới, giúp tránh hiện tượng bị chồng nét hay rối chữ gốc.
-            </p>
-          </div>
-
-          {/* Text Rotation Control */}
-          <div className="flex flex-col gap-1.5 border-t border-gray-200 pt-3">
-            <div className="flex justify-between items-center">
-              <span className="font-bold text-gray-800 flex items-center gap-1">🔄 Góc xoay chữ:</span>
-              <span className="font-mono bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded text-[11px] font-bold">
-                {item.rotation || 0}°
-              </span>
-            </div>
-            
-            <div className="flex items-center gap-3">
-              <input 
-                type="range"
-                min={0}
-                max={360}
-                step={1}
-                value={item.rotation || 0}
-                onChange={(e) => handleTextPropChange(item.id, { rotation: parseInt(e.target.value) || 0, isModified: true })}
-                className="flex-1 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
-              />
-              <input 
-                type="number"
-                min={0}
-                max={360}
-                value={item.rotation || 0}
-                onChange={(e) => {
-                  const val = parseInt(e.target.value);
-                  handleTextPropChange(item.id, { rotation: isNaN(val) ? 0 : (val % 360 + 360) % 360, isModified: true });
-                }}
-                className="w-12 border border-gray-300 rounded px-1 py-0.5 text-center font-mono outline-none text-[11px] bg-white text-gray-800"
-              />
-            </div>
-
-            <div className="grid grid-cols-4 gap-1.5 mt-1">
-              {[0, 90, 180, 270].map((deg) => (
-                <button
-                  key={deg}
-                  onClick={() => handleTextPropChange(item.id, { rotation: deg, isModified: true })}
-                  className={`py-1 rounded text-[10px] font-mono border transition-all cursor-pointer ${
-                    (item.rotation || 0) === deg
-                      ? 'bg-indigo-600 border-indigo-600 text-white font-bold'
-                      : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'
-                  }`}
-                >
-                  {deg}°
-                </button>
-              ))}
-            </div>
-
-            <div className="flex justify-between mt-1 text-[10px] text-gray-500 px-0.5">
-              <button
-                onClick={() => {
-                  const current = item.rotation || 0;
-                  const target = (current - 45 + 360) % 360;
-                  handleTextPropChange(item.id, { rotation: target, isModified: true });
-                }}
-                className="hover:text-indigo-600 font-medium cursor-pointer"
-              >
-                -45°
-              </button>
-              <button
-                onClick={() => {
-                  const current = item.rotation || 0;
-                  const target = (current - 90 + 360) % 360;
-                  handleTextPropChange(item.id, { rotation: target, isModified: true });
-                }}
-                className="hover:text-indigo-600 font-medium cursor-pointer"
-              >
-                -90°
-              </button>
-              <button
-                onClick={() => handleTextPropChange(item.id, { rotation: 0, isModified: true })}
-                className="hover:text-indigo-600 font-medium cursor-pointer"
-              >
-                Đặt lại
-              </button>
-              <button
-                onClick={() => {
-                  const current = item.rotation || 0;
-                  const target = (current + 90) % 360;
-                  handleTextPropChange(item.id, { rotation: target, isModified: true });
-                }}
-                className="hover:text-indigo-600 font-medium cursor-pointer"
-              >
-                +90°
-              </button>
-              <button
-                onClick={() => {
-                  const current = item.rotation || 0;
-                  const target = (current + 45) % 360;
-                  handleTextPropChange(item.id, { rotation: target, isModified: true });
-                }}
-                className="hover:text-indigo-600 font-medium cursor-pointer"
-              >
-                +45°
-              </button>
-            </div>
-          </div>
-
-          {/* Position Nudging */}
-          <div className="flex flex-col gap-2 border-t border-gray-200 pt-3">
-            <span className="font-bold text-gray-800 flex items-center gap-1">🎯 Vi chỉnh vị trí (Nudge):</span>
-            <div className="flex flex-col items-center gap-1 bg-gray-50 p-2.5 rounded-lg border border-gray-200">
-              <button 
-                onClick={() => handleTextPropChange(item.id, { offsetY: (item.offsetY || 0) - 1, isModified: true })}
-                className="p-1 hover:bg-white border border-gray-300 rounded shadow-xs hover:text-indigo-600 cursor-pointer"
-                title="Lên 1px"
-              >
-                <ArrowUp className="w-4 h-4" />
-              </button>
-              <div className="flex gap-4 items-center">
-                <button 
-                  onClick={() => handleTextPropChange(item.id, { offsetX: (item.offsetX || 0) - 1, isModified: true })}
-                  className="p-1 hover:bg-white border border-gray-300 rounded shadow-xs hover:text-indigo-600 cursor-pointer"
-                  title="Trái 1px"
-                >
-                  <span className="transform -rotate-90 block">
-                    <ArrowUp className="w-4 h-4" />
-                  </span>
-                </button>
-                <span className="text-[10px] text-gray-400 font-mono font-medium whitespace-nowrap select-all">
-                  X:{item.offsetX || 0}px | Y:{item.offsetY || 0}px
-                </span>
-                <button 
-                  onClick={() => handleTextPropChange(item.id, { offsetX: (item.offsetX || 0) + 1, isModified: true })}
-                  className="p-1 hover:bg-white border border-gray-300 rounded shadow-xs hover:text-indigo-600 cursor-pointer"
-                  title="Phải 1px"
-                >
-                  <span className="transform rotate-90 block">
-                    <ArrowUp className="w-4 h-4" />
-                  </span>
-                </button>
-              </div>
-              <button 
-                onClick={() => handleTextPropChange(item.id, { offsetY: (item.offsetY || 0) + 1, isModified: true })}
-                className="p-1 hover:bg-white border border-gray-300 rounded shadow-xs hover:text-indigo-600 cursor-pointer"
-                title="Xuống 1px"
-              >
-                <ArrowDown className="w-4 h-4" />
-              </button>
-              
-              <div className="flex gap-2 mt-2 w-full">
-                <button 
-                  onClick={() => handleTextPropChange(item.id, { offsetX: 0, offsetY: 0, isModified: true })}
-                  className="text-[10px] text-indigo-600 font-bold hover:underline mx-auto cursor-pointer"
-                >
-                  Đặt lại vị trí
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Restore / Delete Change */}
-          <div className="border-t border-gray-200 pt-4 flex gap-2">
-            <button
-              onClick={() => {
-                handleRestoreText(item.id);
-                setSelectedTextId(null);
-              }}
-              className="w-full bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 font-bold py-2 px-3 rounded text-center transition-colors shadow-xs cursor-pointer flex items-center justify-center gap-1.5 text-[11px]"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Khôi phục chữ gốc</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  };
+  const renderFormattingSidebar = () => null;
 
   return (
     <div 
@@ -1994,11 +2233,15 @@ export default function App() {
           const pageElement = document.getElementById(`page-${fieldInteraction.pageIndex}`);
           if (!pageElement) return;
           const rect = pageElement.getBoundingClientRect();
-          let x = e.clientX - rect.left;
-          let y = e.clientY - rect.top;
+          let x = (e.clientX - rect.left) / zoom;
+          let y = (e.clientY - rect.top) / zoom;
           
           const dx = x - fieldInteraction.startX;
           const dy = y - fieldInteraction.startY;
+
+          const targetPage = pages[fieldInteraction.pageIndex];
+          const pageWidth = targetPage ? targetPage.width : 800;
+          const pageHeight = targetPage ? targetPage.height : 1131;
           
           setFields(fields.map(f => {
             if (f.id !== fieldInteraction.id) return f;
@@ -2033,19 +2276,57 @@ export default function App() {
               }
             }
             
-            newX = Math.max(0, Math.min(rect.width - newW, newX));
-            newY = Math.max(0, Math.min(rect.height - newH, newY));
+            newX = Math.max(0, Math.min(pageWidth - newW, newX));
+            newY = Math.max(0, Math.min(pageHeight - newH, newY));
             
             return { ...f, x: newX, y: newY, width: newW, height: newH };
+          }));
+        } else if (highlightInteraction) {
+          const pageElement = document.getElementById(`page-${highlightInteraction.pageIndex}`);
+          if (!pageElement) return;
+          const rect = pageElement.getBoundingClientRect();
+          let x = (e.clientX - rect.left) / zoom;
+          let y = (e.clientY - rect.top) / zoom;
+          
+          const dx = x - highlightInteraction.startX;
+          const dy = y - highlightInteraction.startY;
+
+          const targetPage = pages[highlightInteraction.pageIndex];
+          const pageWidth = targetPage ? targetPage.width : 800;
+          const pageHeight = targetPage ? targetPage.height : 1131;
+          
+          setHighlights(prev => prev.map(h => {
+            if (h.id !== highlightInteraction.id) return h;
+            
+            let newX = highlightInteraction.originalX;
+            let newY = highlightInteraction.originalY;
+            let newW = highlightInteraction.originalWidth;
+            let newH = highlightInteraction.originalHeight;
+            
+            if (highlightInteraction.type === 'drag') {
+              newX += dx;
+              newY += dy;
+            } else if (highlightInteraction.type === 'e') {
+              newW += dx;
+              if (newW < 10) newW = 10;
+            }
+            
+            newX = Math.max(0, Math.min(pageWidth - newW, newX));
+            newY = Math.max(0, Math.min(pageHeight - newH, newY));
+            
+            return { ...h, x: newX, y: newY, width: newW, height: newH };
           }));
         } else if (drawing) {
           const pageElement = document.getElementById(`page-${drawing.pageIndex}`);
           if (!pageElement) return;
           const rect = pageElement.getBoundingClientRect();
-          let x = e.clientX - rect.left;
-          let y = e.clientY - rect.top;
-          x = Math.max(0, Math.min(rect.width, x));
-          y = Math.max(0, Math.min(rect.height, y));
+          let x = (e.clientX - rect.left) / zoom;
+          let y = (e.clientY - rect.top) / zoom;
+          const targetPage = pages[drawing.pageIndex];
+          const pageWidth = targetPage ? targetPage.width : 800;
+          const pageHeight = targetPage ? targetPage.height : 1131;
+          x = Math.max(0, Math.min(pageWidth, x));
+          y = Math.max(0, Math.min(pageHeight, y));
           setDrawing({ ...drawing, currentX: x, currentY: y });
         }
       }}
@@ -2195,7 +2476,7 @@ export default function App() {
                     className={`px-4 py-3 flex-1 min-w-[120px] text-center border-b-2 transition-all flex items-center justify-center gap-1.5 ${activeHelpTab === 'fields' ? 'border-indigo-600 text-indigo-700 bg-white' : 'border-transparent text-gray-600 hover:text-gray-900 hover:bg-gray-100/50'}`}
                  >
                     <PenSquare className="w-4 h-4" />
-                    <span>Vùng ký, Thêm chữ & Highlight</span>
+                    <span>Tạo vùng ký & Văn bản</span>
                  </button>
                  <button 
                     onClick={() => setActiveHelpTab('edit_text')}
@@ -2203,6 +2484,13 @@ export default function App() {
                  >
                     <Edit className="w-4 h-4" />
                     <span>Sửa chữ gốc (Xóa nền)</span>
+                 </button>
+                 <button 
+                    onClick={() => setActiveHelpTab('highlights')}
+                    className={`px-4 py-3 flex-1 min-w-[120px] text-center border-b-2 transition-all flex items-center justify-center gap-1.5 ${activeHelpTab === 'highlights' ? 'border-indigo-600 text-indigo-700 bg-white' : 'border-transparent text-gray-600 hover:text-gray-900 hover:bg-gray-100/50'}`}
+                 >
+                    <Highlighter className="w-4 h-4" />
+                    <span>Tô sáng (Highlight)</span>
                  </button>
                  <button 
                     onClick={() => setActiveHelpTab('export_overwrite')}
@@ -2247,12 +2535,6 @@ export default function App() {
                                 <strong className="text-gray-800">Xóa các trang thừa:</strong> Di chuột vào trang bất kỳ ở cột bên trái hoặc trang chính và nhấp vào nút biểu tượng <span className="inline-flex items-center gap-0.5 bg-red-50 text-red-700 border border-red-200 px-1 py-0.5 rounded text-xs"><Trash2 className="w-3 h-3 text-red-600" /> Xóa</span> để lược bỏ trang mong muốn.
                              </div>
                           </li>
-                          <li className="flex items-start gap-2">
-                             <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">5</div>
-                             <div>
-                                <strong className="text-gray-800">Xoay từng trang hoặc nhiều trang:</strong> Rê chuột vào góc bên trái trang bất kỳ và nhấp các nút biểu tượng <span className="inline-flex items-center gap-0.5 bg-purple-50 text-purple-700 border border-purple-200 px-1 py-0.5 rounded text-xs"><RotateCcw className="w-3 h-3 text-purple-600" /> / <RotateCw className="w-3 h-3 text-purple-600" /> Xoay 90°</span>. Để xoay nhiều trang cùng lúc, tích chọn các checkbox ở góc trang và dùng các nút xoay ở thanh nổi phía dưới hoặc trên Ribbon toolbar.
-                             </div>
-                          </li>
                        </ul>
                     </div>
                  )}
@@ -2261,32 +2543,32 @@ export default function App() {
                     <div className="flex flex-col gap-4">
                        <h4 className="text-base font-bold text-gray-800 flex items-center gap-2">
                           <span className="w-1.5 h-6 bg-indigo-600 rounded-full" />
-                          Vùng ký số, Thêm chữ & Tô sáng (Highlight) PDF
+                          Thiết lập vùng ký số và trường nhập liệu
                        </h4>
-                       <p>Chức năng giúp bạn đính kèm chữ ký, chèn chữ mới với phông/màu tùy chỉnh hoặc tô sáng các vùng quan trọng trong tài liệu PDF.</p>
+                       <p>Chức năng này giúp bạn thiết lập sẵn các vị trí ký số hoặc các ô văn bản tương tác trước khi ký hoặc ban hành văn bản.</p>
                        <ul className="space-y-3 pl-1">
                           <li className="flex items-start gap-2">
                              <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">1</div>
                              <div>
-                                <strong className="text-gray-800">Tạo trường vùng ký số chuẩn:</strong> Chọn công cụ <span className="inline-flex items-center gap-0.5 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-300 font-medium text-xs text-gray-700"><PenSquare className="w-3.5 h-3.5 text-indigo-600" /> Trường chữ ký</span> trên thanh công cụ. Click chuột và kéo vẽ khung vùng ký số AcroForm chuẩn.
+                                <strong className="text-gray-800">Tạo trường vùng ký số chuẩn:</strong> Chọn công cụ <span className="inline-flex items-center gap-0.5 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-300 font-medium text-xs text-gray-700"><PenSquare className="w-3.5 h-3.5 text-indigo-600" /> Trường chữ ký</span> trên thanh công cụ. Click chuột và kéo vẽ một khung hình chữ nhật tại nơi cần ký trên PDF. Bạn có thể kéo liên tục nhiều vùng ký trên nhiều trang.
                              </div>
                           </li>
                           <li className="flex items-start gap-2">
                              <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">2</div>
                              <div>
-                                <strong className="text-gray-800">Thêm chữ vào PDF (Chèn văn bản mới):</strong> Chọn công cụ <span className="inline-flex items-center gap-0.5 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-300 font-medium text-xs text-gray-700"><Type className="w-3.5 h-3.5 text-blue-600" /> Thêm chữ</span>. Nhấp kéo để tạo vùng chữ mới, tùy chọn trực tiếp <b>Phông chữ</b> (Arial, Times New Roman, Courier), <b>Cỡ chữ</b> và <b>Màu chữ</b> mong muốn trong hộp cài đặt.
+                                <strong className="text-gray-800">Tạo trường văn bản:</strong> Chọn công cụ <span className="inline-flex items-center gap-0.5 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-300 font-medium text-xs text-gray-700"><Type className="w-3.5 h-3.5 text-blue-600" /> Trường văn bản</span> để kéo vẽ các vùng nhập liệu văn bản tương tác trực tiếp.
                              </div>
                           </li>
                           <li className="flex items-start gap-2">
                              <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">3</div>
                              <div>
-                                <strong className="text-gray-800">Tô sáng khu vực (Highlight PDF):</strong> Chọn công cụ <span className="inline-flex items-center gap-0.5 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-300 font-medium text-xs text-gray-700"><Highlighter className="w-3.5 h-3.5 text-amber-600" /> Highlight PDF</span>. Kéo chọn bất kỳ khu vực nào để tô sáng chữ hoặc khối hình ảnh với tùy chọn màu sắc (Vàng, Xanh lá, Hồng, Xanh dương, Cam) và độ mờ opacity.
+                                <strong className="text-gray-800">Đặt tên định danh cho vùng ký/trường văn bản:</strong> Click đúp hoặc nhấn vào tên chữ trên vùng vừa vẽ để đổi tên trực tiếp, hoặc chọn vùng đó rồi đổi tên ở <span className="font-semibold text-gray-800">Bảng thuộc tính phía bên phải</span> (ví dụ: đặt tên là <i>"ChuKyGiamDoc"</i>, <i>"NguoiKy1"</i>). Tên này sẽ lưu trữ chuẩn cấu trúc AcroForm của tài liệu PDF.
                              </div>
                           </li>
                           <li className="flex items-start gap-2">
                              <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">4</div>
                              <div>
-                                <strong className="text-gray-800">Điều chỉnh kích thước & Di chuyển:</strong> Chuyển về công cụ <span className="inline-flex items-center gap-0.5 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-300 font-medium text-xs text-gray-700"><MousePointer2 className="w-3.5 h-3.5 text-gray-700" /> Chọn</span> để kéo di chuyển các vùng ký hoặc thay đổi kích thước của chúng. Nhấn phím <kbd className="bg-gray-100 px-1 py-0.5 border border-gray-300 rounded font-mono text-xs">Delete</kbd> để xóa nhanh một vùng đang chọn.
+                                <strong className="text-gray-800">Điều chỉnh kích thước & Di chuyển:</strong> Chuyển về công cụ <span className="inline-flex items-center gap-0.5 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-300 font-medium text-xs text-gray-700"><MousePointer2 className="w-3.5 h-3.5 text-gray-700" /> Chọn</span> để kéo di chuyển các vùng ký hoặc thay đổi kích thước của chúng (bằng cách kéo các góc và cạnh màu đỏ/xanh). Nhấn phím <kbd className="bg-gray-100 px-1 py-0.5 border border-gray-300 rounded font-mono text-xs">Delete</kbd> để xóa nhanh một vùng đang chọn.
                              </div>
                           </li>
                        </ul>
@@ -2323,6 +2605,41 @@ export default function App() {
                              <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">4</div>
                              <div>
                                 <strong className="text-gray-800">Di chuyển vị trí chữ đã sửa:</strong> Bạn có thể điều chỉnh vị trí của chữ bằng các nút mũi tên tinh chỉnh <span className="px-1 py-0.5 bg-gray-100 border border-gray-300 rounded font-bold">↑ ↓ ← →</span> ở cột bên phải để đặt chữ vào đúng hàng chuẩn khớp với các dòng xung quanh.
+                             </div>
+                          </li>
+                       </ul>
+                    </div>
+                 )}
+
+                 {activeHelpTab === 'highlights' && (
+                    <div className="flex flex-col gap-4">
+                       <h4 className="text-base font-bold text-amber-900 flex items-center gap-2">
+                          <span className="w-1.5 h-6 bg-amber-500 rounded-full" />
+                          Tô sáng (Highlight) chữ và xóa vùng tô sáng
+                       </h4>
+                       <p>Công cụ Tô sáng (Highlight) giúp bạn làm nổi bật các đoạn văn bản quan trọng trong tài liệu bằng các dải màu trong suốt tương tự như bút dạ quang.</p>
+                       <ul className="space-y-3 pl-1">
+                          <li className="flex items-start gap-2">
+                             <div className="mt-0.5 w-5 h-5 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0 text-amber-700 text-xs font-bold">1</div>
+                             <div>
+                                <strong className="text-gray-800">Tạo vùng tô sáng:</strong> Chọn công cụ <span className="inline-flex items-center gap-0.5 bg-amber-50 text-amber-800 border border-amber-300 px-1.5 py-0.5 rounded font-bold text-xs"><Highlighter className="w-3.5 h-3.5 text-amber-600" /> Tô sáng</span> trên Ribbon. Sau đó dùng chuột kéo thả thành hình chữ nhật bao quanh đoạn chữ cần tô sáng, hoặc nhấp chuột vào các đoạn chữ.
+                             </div>
+                          </li>
+                          <li className="flex items-start gap-2">
+                             <div className="mt-0.5 w-5 h-5 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0 text-amber-700 text-xs font-bold">2</div>
+                             <div>
+                                <strong className="text-gray-800">Tùy chỉnh màu sắc và độ đậm:</strong> Khi đang ở công cụ Tô sáng, thanh công cụ sẽ hiển thị các màu sắc phổ biến (Vàng dạ quang, Xanh lá, Xanh lam, Hồng, Cam...) và thanh chọn độ đậm (30%, 45%, 65%, 85%) hoặc chọn màu tùy ý.
+                             </div>
+                          </li>
+                          <li className="flex items-start gap-2">
+                             <div className="mt-0.5 w-5 h-5 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0 text-amber-700 text-xs font-bold">3</div>
+                             <div>
+                                <strong className="text-gray-800">Mở lên xóa đi khi cần (Xóa highlight):</strong>
+                                <div className="mt-1 space-y-1 text-gray-600">
+                                   <p>• <b>Xóa từng vùng:</b> Click chọn vào vùng tô sáng bất kỳ, sau đó nhấn phím <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded font-mono text-xs text-gray-800 font-bold">Delete</kbd> hoặc <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded font-mono text-xs text-gray-800 font-bold">Backspace</kbd> trên bàn phím, hoặc bấm nút tròn đỏ <Trash2 className="w-3.5 h-3.5 inline text-red-500" /> ở góc vùng tô sáng.</p>
+                                   <p>• <b>Lưu & Giữ lại cho lần sau:</b> Các vùng tô sáng được tự động lưu lại trong trình duyệt và nhúng vào tệp xuất ra. Lần sau mở lên bạn hoàn toàn có thể click chọn và xóa đi dễ dàng.</p>
+                                   <p>• <b>Xóa tất cả:</b> Nhấn nút <span className="bg-red-50 text-red-700 border border-red-200 px-1.5 py-0.5 rounded text-xs font-bold">Xóa hết</span> trên thanh công cụ để xóa toàn bộ các highlight đã tạo.</p>
+                                </div>
                              </div>
                           </li>
                        </ul>
@@ -2437,60 +2754,14 @@ export default function App() {
 
         <div className="w-px h-16 bg-gray-300"></div>
 
-        {/* Page Rotation Group */}
-        <div className="flex items-start space-x-1 relative pr-6">
-           <button 
-             onClick={() => {
-               if (selectedPageIndices.length > 0) {
-                 handleRotatePages(selectedPageIndices, 'ccw');
-               } else {
-                 handleRotatePages([currentPage - 1], 'ccw');
-               }
-             }}
-             className="flex flex-col items-center justify-start w-[68px] h-[68px] rounded-lg border border-transparent hover:bg-white hover:border-purple-200 hover:shadow-sm p-1 pt-1.5 gap-1 transition-all relative overflow-hidden group cursor-pointer"
-             title={selectedPageIndices.length > 0 ? `Xoay sang trái 90° (${selectedPageIndices.length} trang đã chọn)` : `Xoay sang trái 90° (Trang ${currentPage})`}
-           >
-             <div className="absolute inset-0 bg-purple-50 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-             <RotateCcw className="w-6 h-6 text-purple-600 z-10 drop-shadow-sm" strokeWidth={1.5} />
-             <span className="text-[10px] font-medium leading-[1.1] text-center text-gray-700 z-10">Xoay trái<br/>90°</span>
-           </button>
-
-           <button 
-             onClick={() => {
-               if (selectedPageIndices.length > 0) {
-                 handleRotatePages(selectedPageIndices, 'cw');
-               } else {
-                 handleRotatePages([currentPage - 1], 'cw');
-               }
-             }}
-             className="flex flex-col items-center justify-start w-[68px] h-[68px] rounded-lg border border-transparent hover:bg-white hover:border-purple-200 hover:shadow-sm p-1 pt-1.5 gap-1 transition-all relative overflow-hidden group cursor-pointer"
-             title={selectedPageIndices.length > 0 ? `Xoay sang phải 90° (${selectedPageIndices.length} trang đã chọn)` : `Xoay sang phải 90° (Trang ${currentPage})`}
-           >
-             <div className="absolute inset-0 bg-purple-50 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-             <RotateCw className="w-6 h-6 text-purple-600 z-10 drop-shadow-sm" strokeWidth={1.5} />
-             <span className="text-[10px] font-medium leading-[1.1] text-center text-gray-700 z-10">Xoay phải<br/>90°</span>
-           </button>
-
-           <button 
-             onClick={() => {
-               if (!confirm("Bạn có chắc chắn muốn xoay TẤT CẢ các trang trong tài liệu sang phải 90°?")) return;
-               const allIndices = pages.map((_, i) => i);
-               handleRotatePages(allIndices, 'cw');
-             }}
-             className="flex flex-col items-center justify-start w-[68px] h-[68px] rounded-lg border border-transparent hover:bg-white hover:border-purple-200 hover:shadow-sm p-1 pt-1.5 gap-1 transition-all relative overflow-hidden group cursor-pointer"
-             title="Xoay tất cả các trang trong tài liệu sang phải 90°"
-           >
-             <div className="absolute inset-0 bg-purple-50 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-             <RefreshCw className="w-6 h-6 text-purple-600 z-10 drop-shadow-sm" strokeWidth={1.5} />
-             <span className="text-[10px] font-medium leading-[1.1] text-center text-gray-700 z-10">Xoay tất cả<br/>trang</span>
-           </button>
-           <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-purple-800/60 uppercase tracking-wider font-semibold">Xoay trang</div>
-        </div>
-
-        <div className="w-px h-16 bg-gray-300"></div>
-
         {/* Tools Group */}
         <div className="flex items-start space-x-1 relative pr-6">
+           <RibbonButton 
+              icon={PanelLeft} 
+              label={"Bảng\ntrang"} 
+              active={showPageSidebar} 
+              onClick={() => setShowPageSidebar(!showPageSidebar)} 
+           />
            <RibbonButton icon={MousePointer2} label="Chọn" active={activeTool === 'Select'} onClick={() => setActiveTool('Select')} />
            <RibbonButton 
               icon={PenSquare} 
@@ -2500,101 +2771,368 @@ export default function App() {
            />
            <RibbonButton 
               icon={Type} 
-              label={"Thêm\nchữ"} 
-              active={activeTool === 'Add Text' || activeTool === 'Text Field'} 
-              onClick={() => setActiveTool('Add Text')}
+              label={"Trường\nvăn bản"} 
+              active={activeTool === 'Text Field'} 
+              onClick={() => setActiveTool('Text Field')}
            />
-           <RibbonButton 
-              icon={Highlighter} 
-              label={"Highlight\nPDF"} 
-              active={activeTool === 'Highlight'} 
-              onClick={() => setActiveTool('Highlight')}
-           />
-            <RibbonButton 
-               icon={Eraser} 
-               label={"Tẩy / Che\nnền"} 
-               active={activeTool === 'Eraser'} 
-               onClick={() => setActiveTool('Eraser')} 
-            />
            <RibbonButton 
               icon={Edit} 
               label={"Sửa chữ\ngốc"} 
               active={activeTool === 'Edit Text'} 
               onClick={() => setActiveTool('Edit Text')}
            />
+           <RibbonButton 
+              icon={Highlighter} 
+              label={"Tô sáng\n(Highlight)"} 
+              active={activeTool === 'Highlight'} 
+              onClick={() => {
+                setActiveTool('Highlight');
+                setSelectedFieldId(null);
+                setSelectedTextId(null);
+              }}
+           />
            <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-gray-500 uppercase tracking-wider">Công cụ</div>
         </div>
         
-        {activeTool === 'Eraser' && (
-        <div className="bg-indigo-950/95 text-white px-5 py-2.5 rounded-full text-xs font-semibold shadow-2xl flex items-center gap-2 border border-indigo-500/30 backdrop-blur-md animate-fade-in">
-          <span className="w-2.5 h-2.5 bg-emerald-400 rounded-full animate-ping"></span>
-          <span>Đang ở chế độ khoanh vùng <b>Tẩy / Che nền</b> (Kéo ô che trắng lên vùng highlight hoặc vết mờ muốn xóa. Nhấn <kbd className="bg-indigo-800 px-1.5 py-0.5 rounded text-[10px]">ESC</kbd> hoặc nút <b>Chọn</b> để thoát)</span>
-        </div>
-      )}
-      {activeTool === 'Highlight' && (
+        {activeTool === 'Edit Text' && (() => {
+           const currentSelectedText = pdfTexts.find(t => t.id === selectedTextId);
+           return (
+             <>
+               <div className="w-px h-16 bg-gray-300"></div>
+
+               {/* Formatting Ribbon Group */}
+               <div className="flex items-center gap-2.5 bg-white/95 border border-indigo-200 rounded-xl px-3 py-1 h-[68px] shadow-xs relative">
+                 {/* Font family selector */}
+                 <div className="flex flex-col gap-0.5">
+                   <div className="flex items-center justify-between">
+                     <span className="text-[9px] font-bold text-indigo-950 uppercase tracking-wider">Phông chữ</span>
+                     {currentSelectedText && (
+                       <span className="text-[9px] text-emerald-600 font-semibold flex items-center gap-0.5">
+                         <Check className="w-2.5 h-2.5 stroke-[3]" /> Nhận diện
+                       </span>
+                     )}
+                   </div>
+                   <select 
+                     value={currentSelectedText?.customFontFamily || 'Times New Roman'}
+                     disabled={!selectedTextId}
+                     onChange={(e) => {
+                       if (selectedTextId) {
+                         handleTextPropChange(selectedTextId, { customFontFamily: e.target.value, isModified: true });
+                       }
+                     }}
+                     className="text-xs font-semibold bg-white border border-gray-300 rounded px-2 py-1 outline-none focus:ring-1 focus:ring-indigo-500 shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed max-w-[155px]"
+                     style={{ fontFamily: getFontFamily(currentSelectedText?.customFontFamily || 'Times New Roman') }}
+                   >
+                     <option value="Times New Roman">Times New Roman (Chuẩn VN)</option>
+                     <option value="Arial">Arial (Không chân)</option>
+                     <option value="Roboto">Roboto (Hiện đại)</option>
+                     <option value="Courier New">Courier New (Đơn khoảng)</option>
+                   </select>
+                 </div>
+
+                 {/* Font size input & quick increment */}
+                 <div className="flex flex-col gap-0.5">
+                   <span className="text-[9px] font-bold text-indigo-950 uppercase tracking-wider">Cỡ chữ</span>
+                   <div className="flex items-center gap-1">
+                     <input 
+                       type="number"
+                       min={4}
+                       max={120}
+                       step={0.5}
+                       value={Math.round((currentSelectedText?.customFontSize || currentSelectedText?.fontSize || 13) * 10) / 10}
+                       onChange={(e) => {
+                         const val = parseFloat(e.target.value);
+                         if (selectedTextId && !isNaN(val) && val > 0) {
+                           handleTextPropChange(selectedTextId, { customFontSize: val, isModified: true });
+                         }
+                       }}
+                       disabled={!selectedTextId}
+                       className="w-13 text-xs font-bold text-center bg-white border border-gray-300 rounded py-1 outline-none focus:ring-1 focus:ring-indigo-500 shadow-xs disabled:opacity-50"
+                     />
+                     <div className="flex flex-col gap-0.5">
+                       <button 
+                         type="button"
+                         title="Tăng cỡ chữ (+1pt)"
+                         disabled={!selectedTextId}
+                         onClick={() => {
+                           if (selectedTextId && currentSelectedText) {
+                             const cur = currentSelectedText.customFontSize || currentSelectedText.fontSize || 13;
+                             handleTextPropChange(selectedTextId, { customFontSize: cur + 1, isModified: true });
+                           }
+                         }}
+                         className="w-5 h-3.5 flex items-center justify-center bg-white hover:bg-indigo-100 border border-gray-300 rounded text-[9px] font-bold text-gray-700 disabled:opacity-40 cursor-pointer"
+                       >
+                         ▲
+                       </button>
+                       <button 
+                         type="button"
+                         title="Giảm cỡ chữ (-1pt)"
+                         disabled={!selectedTextId}
+                         onClick={() => {
+                           if (selectedTextId && currentSelectedText) {
+                             const cur = currentSelectedText.customFontSize || currentSelectedText.fontSize || 13;
+                             handleTextPropChange(selectedTextId, { customFontSize: Math.max(4, cur - 1), isModified: true });
+                           }
+                         }}
+                         className="w-5 h-3.5 flex items-center justify-center bg-white hover:bg-indigo-100 border border-gray-300 rounded text-[9px] font-bold text-gray-700 disabled:opacity-40 cursor-pointer"
+                       >
+                         ▼
+                       </button>
+                     </div>
+                   </div>
+                 </div>
+
+                 <div className="w-px h-10 bg-indigo-200/80"></div>
+
+                 {/* Bold, Italic & Color */}
+                 <div className="flex flex-col gap-0.5">
+                   <span className="text-[9px] font-bold text-indigo-950 uppercase tracking-wider">Định dạng</span>
+                   <div className="flex items-center gap-1">
+                     <button 
+                       type="button"
+                       title="In đậm (Bold)"
+                       disabled={!selectedTextId}
+                       onClick={() => {
+                         if (selectedTextId && currentSelectedText) {
+                           handleTextPropChange(selectedTextId, { isBold: !currentSelectedText.isBold, isModified: true });
+                         }
+                       }}
+                       className={`w-7 h-7 flex items-center justify-center rounded border transition-all text-xs font-serif font-black cursor-pointer ${
+                         currentSelectedText?.isBold 
+                           ? 'bg-indigo-600 text-white border-indigo-700 shadow-sm font-bold' 
+                           : 'bg-white hover:bg-gray-100 text-gray-800 border-gray-300'
+                       } disabled:opacity-40 disabled:cursor-not-allowed`}
+                     >
+                       B
+                     </button>
+                     <button 
+                       type="button"
+                       title="In nghiêng (Italic)"
+                       disabled={!selectedTextId}
+                       onClick={() => {
+                         if (selectedTextId && currentSelectedText) {
+                           handleTextPropChange(selectedTextId, { isItalic: !currentSelectedText.isItalic, isModified: true });
+                         }
+                       }}
+                       className={`w-7 h-7 flex items-center justify-center rounded border transition-all text-xs font-serif italic font-bold cursor-pointer ${
+                         currentSelectedText?.isItalic 
+                           ? 'bg-indigo-600 text-white border-indigo-700 shadow-sm font-bold' 
+                           : 'bg-white hover:bg-gray-100 text-gray-800 border-gray-300'
+                       } disabled:opacity-40 disabled:cursor-not-allowed`}
+                     >
+                       I
+                     </button>
+
+                     {/* Color picker */}
+                     <label 
+                       className={`w-7 h-7 rounded border border-gray-300 flex flex-col items-center justify-center cursor-pointer bg-white overflow-hidden shadow-xs hover:border-indigo-400 ${!selectedTextId ? 'opacity-40 cursor-not-allowed' : ''}`}
+                       title="Màu chữ"
+                     >
+                       <span className="text-[11px] font-black leading-none" style={{ color: currentSelectedText?.customColor || '#000000' }}>A</span>
+                       <span className="w-4 h-1 mt-0.5 rounded-full" style={{ backgroundColor: currentSelectedText?.customColor || '#000000' }}></span>
+                       <input 
+                         type="color"
+                         disabled={!selectedTextId}
+                         value={currentSelectedText?.customColor || '#000000'}
+                         onChange={(e) => {
+                           if (selectedTextId) {
+                             handleTextPropChange(selectedTextId, { customColor: e.target.value, isModified: true });
+                           }
+                         }}
+                         className="sr-only"
+                       />
+                     </label>
+                   </div>
+                 </div>
+
+                 <div className="w-px h-10 bg-indigo-200/80"></div>
+
+                 {/* Options & Status */}
+                 <div className="flex flex-col justify-between h-full py-0.5">
+                   <div className="flex items-center gap-3">
+                     <label className="flex items-center gap-1 cursor-pointer select-none text-[11px] font-semibold text-gray-700">
+                       <input 
+                         type="checkbox" 
+                         checked={showTextHighlights} 
+                         onChange={(e) => setShowTextHighlights(e.target.checked)}
+                         className="w-3.5 h-3.5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                       />
+                       <span>Khung viền chữ</span>
+                     </label>
+
+                     <label className="flex items-center gap-1 cursor-pointer select-none text-[11px] font-semibold text-gray-700">
+                       <input 
+                         type="checkbox" 
+                         checked={currentSelectedText?.hasBackground !== false} 
+                         disabled={!selectedTextId}
+                         onChange={(e) => {
+                           if (selectedTextId) {
+                             handleTextPropChange(selectedTextId, { hasBackground: e.target.checked, isModified: true });
+                           }
+                         }}
+                         className="w-3.5 h-3.5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer disabled:opacity-40"
+                       />
+                       <span>Xóa nền gốc</span>
+                     </label>
+                   </div>
+
+                   <div className="flex items-center gap-2">
+                     {currentSelectedText ? (
+                       <span className="text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded font-mono font-medium truncate max-w-[170px]" title={`Đã nhận diện từ PDF: ${currentSelectedText.fontName || currentSelectedText.customFontFamily} ${Math.round(currentSelectedText.fontSize)}pt`}>
+                         🔍 {currentSelectedText.customFontFamily || 'Times New Roman'} {Math.round(currentSelectedText.customFontSize || currentSelectedText.fontSize)}pt
+                       </span>
+                     ) : (
+                       <span className="text-[10px] text-indigo-600/80 italic font-medium flex items-center gap-1">
+                         <Sparkles className="w-3 h-3 text-indigo-500" /> Nhấp vào chữ trên trang để sửa đúng phông
+                       </span>
+                     )}
+
+                     {currentSelectedText?.isModified && (
+                       <button
+                         type="button"
+                         onClick={() => {
+                           if (selectedTextId) {
+                             handleRestoreText(selectedTextId);
+                             setSelectedTextId(null);
+                           }
+                         }}
+                         className="text-[10px] text-red-600 hover:text-red-800 hover:underline flex items-center gap-0.5 font-medium cursor-pointer"
+                         title="Khôi phục chữ gốc"
+                       >
+                         <RotateCcw className="w-2.5 h-2.5" /> Gốc
+                       </button>
+                     )}
+                   </div>
+                 </div>
+
+                 <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-indigo-800/60 uppercase tracking-wider font-semibold">Định dạng chữ</div>
+               </div>
+             </>
+           );
+        })()}
+
+        {activeTool === 'Highlight' && (() => {
+          return (
             <>
-              <div className="w-px h-16 bg-gray-300" />
-              <div className="flex flex-col justify-center h-[68px] border border-amber-300/80 rounded-lg px-3 bg-amber-50/60 text-[11px] gap-1.5 shadow-inner relative overflow-hidden min-w-[240px]">
-                <div className="flex items-center gap-1.5 font-semibold text-amber-800">
-                  <Highlighter className="w-3.5 h-3.5 text-amber-600" />
-                  Công cụ Highlight PDF
+              <div className="w-px h-16 bg-gray-300"></div>
+
+              {/* Highlight Toolbar Group */}
+              <div className="flex items-center gap-3 bg-white/95 border border-amber-300 rounded-xl px-3 py-1 h-[68px] shadow-xs relative">
+                {/* Color Palette */}
+                <div className="flex flex-col gap-1">
+                  <span className="text-[9px] font-bold text-amber-950 uppercase tracking-wider">Màu tô sáng</span>
+                  <div className="flex items-center gap-1.5">
+                    {HIGHLIGHT_COLORS.map(c => (
+                      <button
+                        key={c.color}
+                        type="button"
+                        onClick={() => {
+                          setHighlightColor(c.color);
+                          if (selectedHighlightId) {
+                            setHighlights(prev => prev.map(h => h.id === selectedHighlightId ? { ...h, color: c.color } : h));
+                          }
+                        }}
+                        className={`w-5 h-5 rounded-full border-2 transition-transform cursor-pointer ${
+                          (highlightColor || '').toLowerCase() === (c.color || '').toLowerCase() ? 'border-amber-600 scale-115 shadow-sm ring-2 ring-amber-300' : 'border-white hover:scale-105'
+                        }`}
+                        style={{ backgroundColor: c.color }}
+                        title={c.label}
+                      />
+                    ))}
+                    {/* Custom Color Input */}
+                    <label className="relative w-5 h-5 rounded-full border border-gray-300 overflow-hidden cursor-pointer flex items-center justify-center bg-gray-100 hover:opacity-90" title="Chọn màu tùy chỉnh">
+                      <input 
+                        type="color" 
+                        value={highlightColor} 
+                        onChange={(e) => {
+                          setHighlightColor(e.target.value);
+                          if (selectedHighlightId) {
+                            setHighlights(prev => prev.map(h => h.id === selectedHighlightId ? { ...h, color: e.target.value } : h));
+                          }
+                        }}
+                        className="opacity-0 absolute inset-0 cursor-pointer w-full h-full"
+                      />
+                    </label>
+                  </div>
                 </div>
+
+                <div className="h-9 w-px bg-amber-200/80"></div>
+
+                {/* Opacity Selection */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[9px] font-bold text-amber-950 uppercase tracking-wider">Độ đậm</span>
+                    <span className="text-[9px] font-semibold text-amber-800">{Math.round(highlightOpacity * 100)}%</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {[0.3, 0.45, 0.65, 0.85].map(op => (
+                      <button
+                        key={op}
+                        type="button"
+                        onClick={() => {
+                          setHighlightOpacity(op);
+                          if (selectedHighlightId) {
+                            setHighlights(prev => prev.map(h => h.id === selectedHighlightId ? { ...h, opacity: op } : h));
+                          }
+                        }}
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-medium border transition-colors cursor-pointer ${
+                          Math.abs(highlightOpacity - op) < 0.05
+                            ? 'bg-amber-500 text-white border-amber-600 font-bold'
+                            : 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100'
+                        }`}
+                      >
+                        {Math.round(op * 100)}%
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="h-9 w-px bg-amber-200/80"></div>
+
+                {/* Actions & Delete */}
                 <div className="flex items-center gap-2">
-                  <button 
-                    type="button"
-                    onClick={removeNativeHighlights}
-                    className="text-[10px] bg-amber-600 hover:bg-amber-700 text-white px-2.5 py-1 rounded font-semibold transition-colors cursor-pointer flex items-center gap-1 shadow-xs"
-                    title="Xóa tất cả chú thích Highlight dạng Annotation lưu trong file PDF gốc"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                    Xóa Highlight gốc trong file
-                  </button>
-                  {fields.some(f => f.type === 'highlight') && (
-                    <button 
+                  {selectedHighlightId ? (
+                    <button
                       type="button"
-                      onClick={() => setFields(fields.filter(f => f.type !== 'highlight'))}
-                      className="text-[10px] bg-red-100 hover:bg-red-200 text-red-700 border border-red-300 px-2 py-1 rounded font-semibold transition-colors cursor-pointer"
+                      onClick={() => {
+                        setHighlights(prev => prev.filter(h => h.id !== selectedHighlightId));
+                        setSelectedHighlightId(null);
+                      }}
+                      className="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                      title="Xóa vùng tô sáng đang chọn (Phím Delete)"
                     >
-                      Xóa ô vừa vẽ
+                      <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                      <span>Xóa vùng tô</span>
+                    </button>
+                  ) : (
+                    <div className="text-[11px] text-amber-900 leading-tight max-w-[150px]">
+                      Kéo chuột tạo khung tô sáng, hoặc click vào chữ
+                    </div>
+                  )}
+
+                  {highlights.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (confirm(`Bạn có chắc chắn muốn xóa tất cả ${highlights.length} vùng tô sáng?`)) {
+                          setHighlights([]);
+                          setSelectedHighlightId(null);
+                        }
+                      }}
+                      className="px-2 py-1 bg-gray-100 hover:bg-red-50 hover:text-red-700 hover:border-red-200 text-gray-600 border border-gray-200 rounded text-[10px] font-medium transition-colors cursor-pointer flex items-center gap-1"
+                      title="Xóa toàn bộ các highlight trong tài liệu"
+                    >
+                      <X className="w-3 h-3" />
+                      <span>Xóa hết ({highlights.length})</span>
                     </button>
                   )}
                 </div>
+
+                <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-amber-900/60 uppercase tracking-wider font-semibold">Tùy chọn tô sáng (Highlight)</div>
               </div>
             </>
-         )}
-
-         {activeTool === 'Edit Text' && (
-           <>
-             <div className="w-px h-16 bg-gray-300" />
-             <div className="flex flex-col justify-center h-[68px] border border-orange-300/80 rounded-lg px-3 bg-orange-50/60 text-[11px] gap-1.5 shadow-inner relative overflow-hidden min-w-[200px]">
-               <div className="flex items-center gap-1.5 font-semibold text-orange-700">
-                 <span className="w-2 h-2 rounded-full bg-orange-500 animate-pulse" />
-                 Chế độ sửa chữ gốc
-               </div>
-               <label className="flex items-center gap-1.5 cursor-pointer select-none text-gray-700">
-                 <input 
-                   type="checkbox" 
-                   checked={showTextHighlights} 
-                   onChange={(e) => setShowTextHighlights(e.target.checked)}
-                   className="w-3 h-3 text-orange-500 border-gray-300 rounded focus:ring-orange-400 cursor-pointer"
-                 />
-                 <span className="text-[10px]">Hiện khung viền chữ</span>
-               </label>
-               {fontsLoading && (
-                 <div className="flex items-center gap-1 text-[10px] text-indigo-600 animate-pulse font-medium">
-                   <Loader2 className="w-3 h-3 animate-spin" />
-                   <span>Đang tải phông chữ...</span>
-                 </div>
-               )}
-               {fontsLoaded && (
-                 <div className="text-[9px] text-green-600 font-semibold flex items-center gap-1">
-                   <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                   <span>✓ Đã nạp phông tiếng Việt</span>
-                 </div>
-               )}
-             </div>
-           </>
-        )}
+          );
+        })()}
         
         <div className="w-px h-16 bg-gray-300"></div>
 
@@ -2636,72 +3174,133 @@ export default function App() {
          </div>
       </div>
 
-      {/* Horizontal Split Layout: Scrollable Canvas on the Left, Style Panel on the Right */}
+      {/* Horizontal Split Layout: Page Thumbnail Sidebar (Left), Canvas (Center), Style Panel (Right) */}
       <div className="flex-1 flex flex-row overflow-hidden relative">
+        {/* Left Sidebar: Page Thumbnails */}
+        {showPageSidebar && (
+          <PageThumbnailSidebar
+            pages={pages}
+            fields={fields}
+            currentPage={currentPage}
+            selectedPageIndices={selectedPageIndices}
+            onSelectPages={(indices, anchor) => {
+              setSelectedPageIndices(indices);
+              if (anchor !== undefined) setLastSelectedPageIndex(anchor);
+            }}
+            lastSelectedPageIndex={lastSelectedPageIndex}
+            onScrollToPage={handleScrollToPage}
+            onDeletePages={handleDeleteMultiplePages}
+            onMovePages={handleMoveMultiplePages}
+            onRotatePages={handleRotatePages}
+            onAddPageClick={() => appendFileInputRef.current?.click()}
+            onClose={() => setShowPageSidebar(false)}
+            isDigitallySigned={isDigitallySigned}
+          />
+        )}
+
+        {/* Quick Toggle Button when Sidebar is closed */}
+        {!showPageSidebar && (
+          <button
+            type="button"
+            onClick={() => setShowPageSidebar(true)}
+            className="absolute left-0 top-1/2 -translate-y-1/2 bg-white/95 border border-gray-300 border-l-0 rounded-r-lg shadow-md py-3 px-1.5 hover:bg-indigo-50 hover:text-indigo-700 text-gray-600 transition-all z-40 flex flex-col items-center gap-1 group cursor-pointer"
+            title="Mở bảng trang thu nhỏ"
+          >
+            <PanelLeft className="w-4 h-4 text-indigo-600 group-hover:scale-110 transition-transform" />
+            <span className="text-[9px] font-bold uppercase tracking-wider text-gray-500 group-hover:text-indigo-700 [writing-mode:vertical-lr]">
+              Trang
+            </span>
+          </button>
+        )}
+
         {/* Floating Indicator for Continuous Mode */}
-        {(activeTool === 'Signature Field' || activeTool === 'Text Field' || activeTool === 'Add Text' || activeTool === 'Highlight' || activeTool === 'Eraser') && (
+        {(activeTool === 'Signature Field' || activeTool === 'Text Field') && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-indigo-900/95 text-white px-4 py-2.5 rounded-full shadow-lg flex items-center gap-2.5 text-xs font-semibold backdrop-blur-md border border-indigo-500/30 animate-bounce z-50">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             <span>
-              Đang ở chế độ tạo liên tục {
-                activeTool === 'Signature Field' ? 'trường chữ ký' :
-                activeTool === 'Highlight' ? 'vùng highlight' : 'chữ mới'
-              } (Nhấn <kbd className="bg-indigo-700 px-1.5 py-0.5 rounded text-[10px] border border-indigo-500 font-mono">ESC</kbd> hoặc nút <b>Chọn</b> để thoát)
+              Đang ở chế độ tạo liên tục {activeTool === 'Signature Field' ? 'trường chữ ký' : 'trường văn bản'} (Nhấn <kbd className="bg-indigo-700 px-1.5 py-0.5 rounded text-[10px] border border-indigo-500 font-mono">ESC</kbd> hoặc nút <b>Chọn</b> để thoát)
             </span>
           </div>
         )}
 
         {/* Main Workspace Workspace */}
-        <div className="flex-1 bg-[#8c8c8c] overflow-auto p-12 flex flex-col items-center gap-6 shadow-[inset_0_2px_4px_rgba(0,0,0,0.1)] relative" onScroll={handleScroll}>
+        <div 
+          ref={workspaceRef}
+          className="flex-1 bg-[#8c8c8c] overflow-auto p-12 flex flex-col items-center gap-6 shadow-[inset_0_2px_4px_rgba(0,0,0,0.1)] relative" 
+          onScroll={handleScroll}
+        >
         
         {pages.length === 0 ? (
           /* Placeholder Page */
           <div 
-             className={`bg-white shadow-xl w-[800px] h-[1131px] relative transition-all flex-shrink-0 ${
-               activeTool === 'Signature Field' ? 'cursor-crosshair' : 'cursor-default'
-             }`}
-             onMouseDown={(e) => handleMouseDown(e, 0)}
-             onMouseUp={handleMouseUp}
-             onMouseLeave={handleMouseUp}
+             style={{
+               width: 800 * zoom,
+               height: 1131 * zoom,
+               marginBottom: '28px'
+             }}
+             className="relative flex-shrink-0"
           >
-              <div className="absolute top-0 right-0 p-8 text-right opacity-30 select-none pointer-events-none">
-                 <h1 className="text-4xl font-bold tracking-widest text-gray-300 mb-2">TÀI LIỆU</h1>
-                 <p className="text-lg">TRANG 1 / 1</p>
-              </div>
+            <div 
+               className={`bg-white shadow-xl w-[800px] h-[1131px] relative origin-top-left transition-all flex-shrink-0 ${
+                 activeTool === 'Signature Field' ? 'cursor-crosshair' : 'cursor-default'
+               }`}
+               style={{
+                 transform: `scale(${zoom})`,
+                 transformOrigin: 'top left'
+               }}
+               onMouseDown={(e) => handleMouseDown(e, 0)}
+               onMouseUp={handleMouseUp}
+               onMouseLeave={handleMouseUp}
+            >
+                <div className="absolute top-0 right-0 p-8 text-right opacity-30 select-none pointer-events-none">
+                   <h1 className="text-4xl font-bold tracking-widest text-gray-300 mb-2">TÀI LIỆU</h1>
+                   <p className="text-lg">TRANG 1 / 1</p>
+                </div>
 
-              {/* Instructions Placeholder */}
-              <div className="p-20 mt-10 pointer-events-none select-none">
-                 <h2 className="text-2xl font-bold mb-4 text-gray-800">Quy trình thiết lập vùng ký số</h2>
-                 <p className="text-gray-600 mb-6 max-w-2xl leading-relaxed">
-                    Vui lòng tải lên tài liệu PDF để bắt đầu thêm trường chữ ký số. Bạn có thể sử dụng công cụ "Trường chữ ký" để kéo tạo vùng chữ ký mới và sau đó xuất file PDF có chứa vùng chữ ký chuẩn.
-                    <br/><br/>
-                    <b>Mẹo:</b> Sử dụng nút <b>Nhập PDF</b> trên thanh công cụ ở trên để tải file của bạn lên!
-                 </p>
-                 <div className="space-y-4">
-                     <div className="h-4 bg-gray-200 w-full rounded"></div>
-                     <div className="h-4 bg-gray-200 w-5/6 rounded"></div>
-                     <div className="h-4 bg-gray-200 w-4/6 rounded"></div>
-                 </div>
-              </div>
+                {/* Instructions Placeholder */}
+                <div className="p-20 mt-10 pointer-events-none select-none">
+                   <h2 className="text-2xl font-bold mb-4 text-gray-800">Quy trình thiết lập vùng ký số</h2>
+                   <p className="text-gray-600 mb-6 max-w-2xl leading-relaxed">
+                      Vui lòng tải lên tài liệu PDF để bắt đầu thêm trường chữ ký số. Bạn có thể sử dụng công cụ "Trường chữ ký" để kéo tạo vùng chữ ký mới và sau đó xuất file PDF có chứa vùng chữ ký chuẩn.
+                      <br/><br/>
+                      <b>Mẹo:</b> Sử dụng nút <b>Nhập PDF</b> trên thanh công cụ ở trên để tải file của bạn lên!
+                   </p>
+                   <div className="space-y-4">
+                       <div className="h-4 bg-gray-200 w-full rounded"></div>
+                       <div className="h-4 bg-gray-200 w-5/6 rounded"></div>
+                       <div className="h-4 bg-gray-200 w-4/6 rounded"></div>
+                   </div>
+                </div>
 
-              {renderFields(0)}
-              {renderDrawingBox(0)}
+                {renderFields(0)}
+                {renderHighlights(0)}
+                {renderDrawingBox(0)}
+            </div>
           </div>
         ) : (
           /* Render Extracted Pages */
           pages.map((p, i) => {
              const isPageSelected = selectedPageIndices.includes(i);
              return (
-              <div key={i} className="flex flex-row items-stretch relative group">
+              <div 
+                key={i} 
+                className="flex flex-row items-stretch relative group flex-shrink-0"
+                style={{
+                  width: p.width * zoom,
+                  height: p.height * zoom,
+                  marginBottom: '28px'
+                }}
+              >
                    {/* Page Selection Checkbox */}
                    {!isDigitallySigned && (
-                      <div className={`absolute top-4 left-4 z-50 transition-all ${isPageSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+                      <div className={`absolute top-4 left-4 z-40 transition-all ${isPageSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
                          <input 
                             type="checkbox"
                             checked={isPageSelected}
                             onChange={(e) => {
                                if (e.target.checked) {
                                   setSelectedPageIndices([...selectedPageIndices, i]);
+                                  setLastSelectedPageIndex(i);
                                } else {
                                   setSelectedPageIndices(selectedPageIndices.filter(idx => idx !== i));
                                }
@@ -2712,13 +3311,11 @@ export default function App() {
                    )}
 
                    {/* Page Controls (shown on hover) */}
-                   <div className="absolute -left-12 top-4 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-50">
+                   <div className="absolute -left-12 top-4 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-40">
                        {!isDigitallySigned ? (
                          <>
                            <button title="Chèn PDF vào trước trang này" onClick={() => { setInsertTargetIndex(i); insertFileInputRef.current?.click(); }} className="p-1.5 bg-white border border-gray-300 rounded shadow hover:bg-gray-100 text-green-600"><FilePlus className="w-4 h-4" /></button>
                            <button title="Xóa trang này" onClick={() => setDeletePageConfirm({index: i, dataUrl: p.dataUrl})} className="p-1.5 bg-white border border-gray-300 rounded shadow hover:bg-gray-100 text-red-600"><Trash2 className="w-4 h-4" /></button>
-                           <button title="Xoay sang trái 90°" onClick={() => handleRotatePages([i], 'ccw')} className="p-1.5 bg-white border border-gray-300 rounded shadow hover:bg-gray-100 text-purple-600 cursor-pointer"><RotateCcw className="w-4 h-4" /></button>
-                           <button title="Xoay sang phải 90°" onClick={() => handleRotatePages([i], 'cw')} className="p-1.5 bg-white border border-gray-300 rounded shadow hover:bg-gray-100 text-purple-600 cursor-pointer"><RotateCw className="w-4 h-4" /></button>
                            <button 
                                title="Di chuyển trang lên" 
                                onClick={() => handleMovePage(i, 'up')} 
@@ -2743,15 +3340,22 @@ export default function App() {
 
                    <div 
                      id={`page-${i}`}
-                     className={`bg-white shadow-xl relative transition-all duration-200 flex-shrink-0 ${
-                       (activeTool === 'Signature Field' || activeTool === 'Text Field') ? 'cursor-crosshair' : 'cursor-default'
-                     } ${isPageSelected ? 'ring-4 ring-indigo-500 ring-offset-2 scale-[1.01] z-30' : ''}`}
-                     style={{ width: p.width, height: p.height }}
+                     className={`bg-white shadow-xl relative origin-top-left transition-all duration-150 flex-shrink-0 ${
+                       (activeTool === 'Signature Field' || activeTool === 'Text Field' || activeTool === 'Highlight') ? 'cursor-crosshair' : 'cursor-default'
+                     } ${isPageSelected ? 'ring-4 ring-indigo-500 ring-offset-2 scale-[1.005] z-20' : ''}`}
+                     style={{ 
+                       width: p.width, 
+                       height: p.height,
+                       transform: `scale(${zoom})`,
+                       transformOrigin: 'top left'
+                     }}
                      onMouseDown={(e) => handleMouseDown(e, i)}
                    >
-                      <img src={p.dataUrl} className="w-full h-full pointer-events-none" alt={`Trang ${i+1}`} />
+                      <img src={p.dataUrl} className="w-full h-full pointer-events-none select-none" alt={`Trang ${i+1}`} />
                       {renderFields(i)}
-                      {renderPdfTexts(i)}
+                      {renderHighlights(i)}
+                      {activeTool === 'Edit Text' && renderOriginalTexts(i)}
+                      {renderModifiedTextsOverlay(i)}
                       {renderDrawingBox(i)}
                    </div>
               </div>
@@ -2759,81 +3363,51 @@ export default function App() {
           })
         )}
 
-        {/* Floating Page Indicator */}
+        {/* Centered Floating Page Indicator */}
         {pages.length > 0 && (
            <div 
-              className="fixed bottom-6 bg-[#0f205c] bg-opacity-90 text-white px-5 py-2.5 rounded-full shadow-2xl z-[100] flex items-center gap-4 border border-[#2b3c7c] transition-all duration-200"
-              style={{ right: selectedTextId ? '344px' : '24px' }}
+              className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-[#0f205c]/90 backdrop-blur-md text-white px-5 py-2 rounded-full shadow-2xl z-30 flex items-center gap-4 border border-[#2b3c7c]/80 transition-all duration-200"
            >
               <button 
                   onClick={() => {
-                     const el = document.getElementById(`page-${currentPage - 2}`);
-                     if (el) el.scrollIntoView({ behavior: 'smooth' });
+                     const target = currentPage - 1;
+                     if (target >= 1) handleScrollToPage(target - 1);
                   }}
                   disabled={currentPage <= 1}
-                  className="hover:text-blue-300 disabled:opacity-30 disabled:hover:text-white transition-colors"
-                  aria-label="Previous Page"
+                  className="hover:text-blue-300 disabled:opacity-30 disabled:hover:text-white transition-colors cursor-pointer"
+                  aria-label="Trang trước"
               >
-                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+                 <ChevronLeft className="w-5 h-5" />
               </button>
-              <span className="text-sm font-semibold select-none whitespace-nowrap">Trang {currentPage} / {pages.length}</span>
+              <span className="text-xs font-bold select-none whitespace-nowrap">Trang {currentPage} / {pages.length}</span>
               <button 
                   onClick={() => {
-                     const el = document.getElementById(`page-${currentPage}`);
-                     if (el) el.scrollIntoView({ behavior: 'smooth' });
+                     const target = currentPage + 1;
+                     if (target <= pages.length) handleScrollToPage(target - 1);
                   }}
                   disabled={currentPage >= pages.length}
-                  className="hover:text-blue-300 disabled:opacity-30 disabled:hover:text-white transition-colors"
-                  aria-label="Next Page"
+                  className="hover:text-blue-300 disabled:opacity-30 disabled:hover:text-white transition-colors cursor-pointer"
+                  aria-label="Trang sau"
               >
-                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                 <ChevronRight className="w-5 h-5" />
               </button>
            </div>
         )}
 
         {/* Floating Action Bar for Multi-Page Management */}
         {selectedPageIndices.length > 0 && (
-           <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-white border border-gray-200 text-gray-800 px-6 py-3 rounded-2xl shadow-2xl z-[100] flex items-center gap-5 border-indigo-100 animate-fade-in">
+           <div className="fixed bottom-20 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-md border border-gray-200 text-gray-800 px-6 py-2.5 rounded-2xl shadow-2xl z-30 flex items-center gap-4 border-indigo-100 animate-fade-in">
               <div className="flex items-center gap-2">
-                 <div className="bg-indigo-100 text-indigo-700 w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs">
+                 <div className="bg-indigo-100 text-indigo-700 w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs">
                     {selectedPageIndices.length}
                  </div>
                  <span className="text-xs font-semibold text-gray-700">trang đã chọn</span>
               </div>
               
-              <div className="h-6 w-px bg-gray-200" />
-
-               <div className="flex items-center gap-1.5">
-                  <button 
-                     onClick={() => handleRotatePages(selectedPageIndices, 'ccw')}
-                     className="flex items-center gap-1 text-xs text-purple-700 hover:text-purple-800 font-semibold bg-purple-50 hover:bg-purple-100 border border-purple-200 px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer shadow-xs"
-                     title="Xoay các trang đã chọn sang trái 90°"
-                  >
-                     <RotateCcw className="w-3.5 h-3.5" />
-                     Xoay trái 90°
-                  </button>
-                  <button 
-                     onClick={() => handleRotatePages(selectedPageIndices, 'cw')}
-                     className="flex items-center gap-1 text-xs text-purple-700 hover:text-purple-800 font-semibold bg-purple-50 hover:bg-purple-100 border border-purple-200 px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer shadow-xs"
-                     title="Xoay các trang đã chọn sang phải 90°"
-                  >
-                     <RotateCw className="w-3.5 h-3.5" />
-                     Xoay phải 90°
-                  </button>
-                  <button 
-                     onClick={() => handleRotatePages(selectedPageIndices, '180')}
-                     className="flex items-center gap-1 text-xs text-purple-700 hover:text-purple-800 font-semibold bg-purple-50 hover:bg-purple-100 border border-purple-200 px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer shadow-xs"
-                     title="Xoay ngược 180°"
-                  >
-                     <RefreshCw className="w-3.5 h-3.5" />
-                     Xoay 180°
-                  </button>
-               </div>
-
-               <div className="h-6 w-px bg-gray-200" />
+              <div className="h-5 w-px bg-gray-200" />
               
-              <div className="flex items-center gap-2">
-                 <span className="text-xs text-gray-500 font-medium">Di chuyển đến trước trang:</span>
+              <div className="flex items-center gap-1.5">
+                 <span className="text-xs text-gray-500 font-medium">Chuyển trước:</span>
                  <select 
                     onChange={(e) => {
                        const targetVal = parseInt(e.target.value);
@@ -2842,9 +3416,9 @@ export default function App() {
                        }
                     }}
                     value=""
-                    className="bg-gray-50 border border-gray-300 text-gray-900 text-xs rounded-lg focus:ring-indigo-500 focus:border-indigo-500 p-1.5 cursor-pointer font-medium"
+                    className="bg-gray-50 border border-gray-300 text-gray-900 text-xs rounded-lg focus:ring-indigo-500 focus:border-indigo-500 px-2 py-1 cursor-pointer font-medium"
                  >
-                    <option value="" disabled>Chọn trang đích...</option>
+                    <option value="" disabled>Chọn đích...</option>
                     {pages.map((_, idx) => {
                        if (selectedPageIndices.includes(idx)) return null;
                        return (
@@ -2857,59 +3431,158 @@ export default function App() {
                  </select>
               </div>
 
-              <div className="h-6 w-px bg-gray-200" />
+              <div className="h-5 w-px bg-gray-200" />
 
               <button 
                  onClick={() => handleDeleteMultiplePages(selectedPageIndices)}
-                 className="flex items-center gap-1.5 text-xs text-red-600 hover:text-red-700 font-semibold bg-red-50 hover:bg-red-100 px-3 py-2 rounded-lg transition-colors cursor-pointer"
+                 disabled={isDigitallySigned}
+                 className="flex items-center gap-1 text-xs text-red-600 hover:text-red-700 font-semibold bg-red-50 hover:bg-red-100 px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
               >
-                 <Trash2 className="w-4 h-4" />
-                 Xóa trang
+                 <Trash2 className="w-3.5 h-3.5" />
+                 Xóa
               </button>
 
               <button 
                  onClick={() => setSelectedPageIndices([])}
-                 className="text-xs text-gray-500 hover:text-gray-700 font-medium hover:underline"
+                 className="text-xs text-gray-500 hover:text-gray-700 font-medium hover:underline cursor-pointer"
               >
-                 Hủy chọn
+                 Hủy
               </button>
            </div>
          )}
 
-        </div>
+        {/* Floating Zoom Controls Bar at Bottom Right */}
+        <ZoomControls
+           zoom={zoom}
+           onZoomChange={setZoom}
+           onFitWidth={handleFitWidth}
+           onFitPage={handleFitPage}
+           onResetZoom={handleResetZoom}
+           className="fixed bottom-6 z-30"
+           style={{ right: '24px' }}
+        />
 
-        {/* Formatting Sidebar Panel */}
-        {renderFormattingSidebar()}
+        </div>
       </div>
     </div>
   );
+
+  function renderHighlights(pageIndex: number) {
+    return highlights
+      .filter(h => h.pageIndex === pageIndex)
+      .map(h => {
+        const isSelected = h.id === selectedHighlightId;
+        return (
+          <div
+            key={h.id}
+            id={`highlight-${h.id}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setSelectedHighlightId(h.id);
+              setSelectedFieldId(null);
+              setSelectedTextId(null);
+            }}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              setSelectedHighlightId(h.id);
+              setSelectedFieldId(null);
+              setSelectedTextId(null);
+              const pageElement = document.getElementById(`page-${pageIndex}`);
+              if (pageElement) {
+                const rect = pageElement.getBoundingClientRect();
+                const startX = (e.clientX - rect.left) / zoom;
+                const startY = (e.clientY - rect.top) / zoom;
+                setHighlightInteraction({
+                  id: h.id,
+                  type: 'drag',
+                  startX,
+                  startY,
+                  originalX: h.x,
+                  originalY: h.y,
+                  originalWidth: h.width,
+                  originalHeight: h.height,
+                  pageIndex,
+                });
+              }
+            }}
+            className={`absolute group cursor-pointer transition-shadow z-25 rounded-xs select-none ${
+              isSelected ? 'ring-2 ring-amber-500 ring-offset-1 shadow-md' : 'hover:ring-1 hover:ring-amber-400'
+            }`}
+            style={{
+              left: h.x,
+              top: h.y,
+              width: h.width,
+              height: h.height,
+              backgroundColor: h.color,
+              opacity: h.opacity || 0.45,
+              mixBlendMode: 'multiply',
+            }}
+            title="Khung tô sáng (Click để chọn, phím Delete hoặc nút X để xóa)"
+          >
+            {/* Resizing handle on right edge */}
+            {isSelected && (
+              <div
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  const pageElement = document.getElementById(`page-${pageIndex}`);
+                  if (pageElement) {
+                    const rect = pageElement.getBoundingClientRect();
+                    const startX = (e.clientX - rect.left) / zoom;
+                    const startY = (e.clientY - rect.top) / zoom;
+                    setHighlightInteraction({
+                      id: h.id,
+                      type: 'e',
+                      startX,
+                      startY,
+                      originalX: h.x,
+                      originalY: h.y,
+                      originalWidth: h.width,
+                      originalHeight: h.height,
+                      pageIndex,
+                    });
+                  }
+                }}
+                className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize bg-amber-500/80 hover:bg-amber-600 rounded-r-xs z-30"
+                title="Kéo mép phải để chỉnh độ dài khung tô sáng"
+              />
+            )}
+
+            {/* Quick floating delete button */}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setHighlights(prev => prev.filter(item => item.id !== h.id));
+                if (selectedHighlightId === h.id) setSelectedHighlightId(null);
+              }}
+              className={`absolute -top-3.5 -right-3.5 w-6 h-6 bg-red-600 hover:bg-red-700 text-white rounded-full flex items-center justify-center shadow-lg transition-all z-40 cursor-pointer ${
+                isSelected ? 'opacity-100 scale-100' : 'opacity-0 group-hover:opacity-100 scale-90 hover:scale-100'
+              }`}
+              title="Xóa khung tô sáng này"
+            >
+              <Trash2 className="w-3.5 h-3.5 stroke-[2.5]" />
+            </button>
+          </div>
+        );
+      });
+  }
 
   function renderFields(pageIndex: number) {
      return fields.filter(f => f.pageIndex === pageIndex).map(f => {
          const isSelected = f.id === selectedFieldId;
          const isText = f.type === 'text';
-         const isHighlight = f.type === 'highlight';
          
-         const bgClass = isHighlight
-           ? ''
-           : (isText 
-               ? 'bg-blue-50/90 border-blue-500 hover:bg-blue-100/90' 
-               : 'bg-indigo-50/90 border-indigo-500 hover:bg-indigo-100/90');
+         const bgClass = isText 
+           ? 'bg-blue-50/90 border-blue-500 hover:bg-blue-100/90' 
+           : 'bg-indigo-50/90 border-indigo-500 hover:bg-indigo-100/90';
            
-         const borderClass = isHighlight
-            ? (isSelected ? 'border-2 border-amber-600 z-50 shadow-md' : 'border border-transparent hover:border-amber-400/60')
-           : (isSelected 
-               ? (isText ? 'border-2 border-blue-600 z-50 shadow-md' : 'border-2 border-indigo-600 z-50 shadow-md') 
-               : (isText ? 'border border-dashed border-blue-400 hover:border-blue-600' : 'border border-dashed border-indigo-400 hover:border-indigo-600'));
+         const borderClass = isSelected 
+           ? (isText ? 'border-2 border-blue-600 z-50 shadow-md' : 'border-2 border-indigo-600 z-50 shadow-md') 
+           : (isText ? 'border border-dashed border-blue-400 hover:border-blue-600' : 'border border-dashed border-indigo-400 hover:border-indigo-600');
            
-         const activeColorClass = isHighlight ? 'bg-amber-500' : (isText ? 'bg-blue-600' : 'bg-indigo-600');
-         const focusRingClass = isHighlight ? 'focus:border-amber-500 focus:ring-amber-500' : (isText ? 'focus:border-blue-500 focus:ring-blue-500' : 'focus:border-indigo-500 focus:ring-indigo-500');
+         const activeColorClass = isText ? 'bg-blue-600' : 'bg-indigo-600';
+         const focusRingClass = isText ? 'focus:border-blue-500 focus:ring-blue-500' : 'focus:border-indigo-500 focus:ring-indigo-500';
 
-          const highlightInnerStyle: React.CSSProperties = isHighlight ? {
-            backgroundColor: f.highlightColor || '#FFFF00',
-            opacity: f.opacity !== undefined ? f.opacity : 0.55,
-            mixBlendMode: 'multiply',
-          } : {};
          return (
          <div 
            key={f.id}
@@ -2919,11 +3592,11 @@ export default function App() {
               e.stopPropagation();
               setSelectedFieldId(f.id);
               if (activeTool === 'Select') {
-                const pageElement = (e.currentTarget as HTMLElement).closest('.relative.flex-shrink-0') as HTMLDivElement;
+                const pageElement = (e.currentTarget as HTMLElement).closest('[id^="page-"]') as HTMLDivElement;
                 if (pageElement) {
                     const rect = pageElement.getBoundingClientRect();
-                    const startX = e.clientX - rect.left;
-                    const startY = e.clientY - rect.top;
+                    const startX = (e.clientX - rect.left) / zoom;
+                    const startY = (e.clientY - rect.top) / zoom;
                     setFieldInteraction({
                         id: f.id,
                         type: 'drag',
@@ -2937,77 +3610,56 @@ export default function App() {
                     });
                 }
               }
-           }}>
-              {/* Inner Highlight Fill (chỉ mờ vùng màu tô, không làm mờ popup thuộc tính) */}
-              {isHighlight && (
-                <div 
-                  className="absolute inset-0 pointer-events-none rounded-xs"
-                  style={highlightInnerStyle}
-                />
-              )}
+           }}
+         >
              {/* Content Icon & Text */}
-              <div className={`absolute inset-0 flex flex-col items-center justify-center p-1 text-center gap-0.5 ${isSelected ? '' : 'pointer-events-none select-none'}`}>
-                  {isHighlight ? null : isText ? (
-                      isSelected ? (
-                          <textarea 
-                              value={f.textValue || ''} 
-                              placeholder="Nhập nội dung chữ..."
-                              autoFocus
-                              onChange={(e) => {
-                                setFields(fields.map(field => field.id === f.id ? { ...field, textValue: e.target.value } : field));
-                              }}
-                              onMouseDown={(e) => e.stopPropagation()}
-                              onClick={(e) => e.stopPropagation()}
-                              style={{
-                                fontFamily: getFontFamily(f.fontFamily || 'sans-serif'),
-                                color: f.color || '#000000',
-                                fontSize: f.fontSize ? `${Math.min(f.fontSize, 20)}px` : '14px',
-                                fontWeight: f.isBold ? 'bold' : 'normal',
-                                fontStyle: f.isItalic ? 'italic' : 'normal',
-                                textDecoration: f.isUnderline ? 'underline' : 'none'
-                              }}
-                              className="font-semibold text-left bg-white/80 border border-blue-400 rounded p-1 w-full h-full outline-none focus:ring-1 focus:ring-blue-500 resize-none leading-normal"
-                          />
-                      ) : (
-                          <span 
-                            style={{
-                              fontFamily: getFontFamily(f.fontFamily || 'sans-serif'),
-                              color: f.color || '#000000',
-                              fontSize: f.fontSize ? `${Math.min(f.fontSize, 18)}px` : '14px',
-                              fontWeight: f.isBold ? 'bold' : 'normal',
-                              fontStyle: f.isItalic ? 'italic' : 'normal',
-                              textDecoration: f.isUnderline ? 'underline' : 'none'
-                            }}
-                            className={`font-semibold leading-normal truncate max-w-full w-full text-left p-0.5 ${!f.textValue ? 'text-gray-400 italic text-[11px]' : ''}`}
-                          >
-                              {f.textValue || 'Nhấp để nhập chữ...'}
-                          </span>
-                      )
-                  ) : (
-                      <>
-                          <PenSquare className="w-5 h-5 text-indigo-600 pointer-events-none" />
-                          {isSelected ? (
-                              <input 
-                                  type="text" 
-                                  value={f.name} 
-                                  autoFocus
-                                  onFocus={(e) => e.target.select()}
-                                  onChange={(e) => {
-                                    setFields(fields.map(field => field.id === f.id ? { ...field, name: e.target.value } : field));
-                                  }}
-                                  onMouseDown={(e) => e.stopPropagation()}
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="text-[11px] font-bold text-indigo-700 text-center bg-white border border-indigo-300 rounded px-1 py-0.5 w-full outline-none focus:ring-1 focus:ring-indigo-500 font-sans"
-                              />
-                          ) : (
-                              <span className="text-[11px] font-bold text-indigo-700 leading-none truncate max-w-full">{f.name}</span>
-                          )}
-                      </>
-                  )}
-              </div>
-              
-              {/* Corner Handles for resizing */}
-             {isSelected && (
+             <div className={`absolute inset-0 flex flex-col items-center justify-center p-1 text-center gap-0.5 ${isSelected ? '' : 'pointer-events-none select-none'}`}>
+                 {isText ? (
+                     <>
+                         <Type className="w-4 h-4 text-blue-600 pointer-events-none" />
+                         {isSelected ? (
+                             <input 
+                                 type="text" 
+                                 value={f.name} 
+                                 autoFocus
+                                 onFocus={(e) => e.target.select()}
+                                 onChange={(e) => {
+                                   setFields(fields.map(field => field.id === f.id ? { ...field, name: e.target.value } : field));
+                                 }}
+                                 onMouseDown={(e) => e.stopPropagation()}
+                                 onClick={(e) => e.stopPropagation()}
+                                 className="text-[10px] font-bold text-blue-700 text-center bg-white border border-blue-300 rounded px-1 py-0.5 w-full outline-none focus:ring-1 focus:ring-blue-500 font-sans"
+                             />
+                         ) : (
+                             <span className="text-[10px] font-bold text-blue-700 leading-none truncate max-w-full">
+                                 {f.textValue || f.name}
+                             </span>
+                         )}
+                     </>
+                 ) : (
+                     <>
+                         {isSelected ? (
+                             <input 
+                                 type="text" 
+                                 value={f.name} 
+                                 autoFocus
+                                 onFocus={(e) => e.target.select()}
+                                 onChange={(e) => {
+                                   setFields(fields.map(field => field.id === f.id ? { ...field, name: e.target.value } : field));
+                                 }}
+                                 onMouseDown={(e) => e.stopPropagation()}
+                                 onClick={(e) => e.stopPropagation()}
+                                 className="text-xs sm:text-sm font-semibold text-indigo-800 text-center bg-white/90 border border-indigo-300 rounded px-2 py-0.5 max-w-[90%] outline-none focus:ring-1 focus:ring-indigo-500 font-sans shadow-sm"
+                             />
+                         ) : (
+                             <span className="text-xs sm:text-sm font-semibold text-indigo-800 leading-tight truncate max-w-full px-1">{f.name}</span>
+                         )}
+                     </>
+                 )}
+             </div>
+             
+             {/* Corner Handles for resizing */}
+             {isSelected && activeTool === 'Select' && (
                  <>
                      <div onMouseDown={(e) => handleResizeDown(e, f, 'nw')} className={`absolute top-0 left-0 w-1.5 h-1.5 ${activeColorClass} transform -translate-x-1/2 -translate-y-1/2 cursor-nwse-resize border border-white rounded-full z-10`}></div>
                      <div onMouseDown={(e) => handleResizeDown(e, f, 'n')} className={`absolute top-0 left-1/2 w-1.5 h-1.5 ${activeColorClass} transform -translate-x-1/2 -translate-y-1/2 cursor-ns-resize border border-white rounded-full z-10`}></div>
@@ -3026,179 +3678,54 @@ export default function App() {
              <button 
                onClick={(e) => { e.stopPropagation(); deleteField(f.id); }}
                className="absolute -top-2 -right-2 bg-white text-red-600 border border-red-200 rounded-full w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-50 hover:text-red-700 cursor-pointer shadow z-20 transition-all duration-150"
-               title={isHighlight ? "Xóa highlight" : (isText ? "Xóa văn bản" : "Xóa trường chữ ký")}
+               title={isText ? "Xóa trường văn bản" : "Xóa trường chữ ký"}
              >
                  <X className="w-3 h-3 stroke-[2.5]" />
              </button>
              
-             {/* Properties Popup Wrapper */}
-             {isSelected && (
-                 <div className="absolute left-0 top-[calc(100%+4px)] bg-white border border-gray-200 rounded-md p-2.5 shadow-lg z-50 text-[11px] font-sans text-gray-800 cursor-default w-[230px]"
+             {/* Properties Popup Wrapper - chỉ hiển thị cho trường văn bản */}
+             {isSelected && activeTool === 'Select' && isText && (
+                 <div className="absolute left-0 top-[calc(100%+4px)] bg-white border border-gray-200 rounded-md p-2.5 shadow-lg z-50 text-[11px] font-sans text-gray-800 cursor-default w-[220px]"
                   onMouseDown={(e) => e.stopPropagation()}
                  >
                      <div className="flex flex-col gap-2">
-                         {isHighlight ? (
-                             <>
-                                 
-                                 <div className="flex flex-col gap-1">
-                                     <span className="font-semibold text-gray-700">Màu sắc Highlight 🖍️:</span>
-                                     <div className="flex items-center gap-1.5">
-                                         {['#FFFF00', '#22C55E', '#EC4899', '#3B82F6', '#F97316', '#A855F7'].map(c => (
-                                             <button
-                                                 key={c}
-                                                 type="button"
-                                                 onClick={() => setFields(fields.map(field => field.id === f.id ? { ...field, highlightColor: c } : field))}
-                                                 className="w-5 h-5 rounded-full border border-gray-300 shadow-xs cursor-pointer flex items-center justify-center transition-transform hover:scale-110"
-                                                 style={{ backgroundColor: c }}
-                                             >
-                                                 {(f.highlightColor || '#FFFF00') === c && <span className="w-1.5 h-1.5 bg-black/60 rounded-full" />}
-                                             </button>
-                                         ))}
-                                         <input 
-                                             type="color"
-                                             value={f.highlightColor || '#FFFF00'}
-                                             onChange={(e) => setFields(fields.map(field => field.id === f.id ? { ...field, highlightColor: e.target.value } : field))}
-                                             className="w-5 h-5 rounded border border-gray-300 cursor-pointer p-0 bg-transparent ml-auto"
-                                         />
-                                     </div>
-                                 </div>
-                                 <div className="flex flex-col gap-1">
-                                     <div className="flex justify-between items-center">
-                                         <span className="font-semibold text-gray-700">Độ mờ (Opacity):</span>
-                                         <span className="font-mono text-gray-600">{Math.round((f.opacity !== undefined ? f.opacity : 0.55) * 100)}%</span>
-                                     </div>
-                                     <input 
-                                         type="range"
-                                         min={0.1}
-                                         max={0.9}
-                                         step={0.05}
-                                         value={f.opacity !== undefined ? f.opacity : 0.55}
-                                         onChange={(e) => {
-                                           const op = parseFloat(e.target.value);
-                                           setFields(fields.map(field => field.id === f.id ? { ...field, opacity: op } : field));
-                                         }}
-                                         className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-amber-500"
-                                     />
-                                 </div>
-                             </>
-                         ) : isText ? (
-                             <>
-                                 <div className="flex flex-col gap-1">
-                                     <span className="font-semibold text-gray-700">Nội dung chữ:</span>
-                                     <textarea 
-                                        value={f.textValue || ''} 
-                                        placeholder="Nhập nội dung văn bản..."
-                                        onChange={(e) => {
-                                          setFields(fields.map(field => field.id === f.id ? { ...field, textValue: e.target.value } : field));
-                                        }}
-                                        rows={2}
-                                        className={`w-full border border-gray-300 rounded px-2 py-1 outline-none bg-white ${focusRingClass} resize-none`}
-                                     />
-                                 </div>
-                                 <div className="flex flex-col gap-1">
-                                     <span className="font-semibold text-gray-700">Phông chữ:</span>
-                                     <select
-                                        value={f.fontFamily || 'sans-serif'}
-                                        onChange={(e) => {
-                                          setFields(fields.map(field => field.id === f.id ? { ...field, fontFamily: e.target.value } : field));
-                                        }}
-                                        className={`w-full border border-gray-300 rounded px-2 py-1 outline-none bg-white ${focusRingClass} text-[11px] font-medium`}
-                                     >
-                                        <option value="sans-serif">Arial (Không chân)</option>
-                                        <option value="serif">Times New Roman (Có chân)</option>
-                                        <option value="monospace">Courier New (Mã máy)</option>
-                                     </select>
-                                 </div>
-                                  <div className="flex flex-col gap-1">
-                                      <span className="font-semibold text-gray-700">Định dạng chữ:</span>
-                                      <div className="flex items-center gap-1.5">
-                                          <button
-                                              type="button"
-                                              onClick={() => setFields(fields.map(field => field.id === f.id ? { ...field, isBold: !field.isBold } : field))}
-                                              className={`px-3 py-1 rounded text-xs font-bold transition-all cursor-pointer ${
-                                                  f.isBold ? 'bg-indigo-600 text-white shadow-xs' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300'
-                                              }`}
-                                              title="In đậm (Bold)"
-                                          >
-                                              B
-                                          </button>
-                                          <button
-                                              type="button"
-                                              onClick={() => setFields(fields.map(field => field.id === f.id ? { ...field, isItalic: !field.isItalic } : field))}
-                                              className={`px-3 py-1 rounded text-xs italic font-serif transition-all cursor-pointer ${
-                                                  f.isItalic ? 'bg-indigo-600 text-white shadow-xs' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300'
-                                              }`}
-                                              title="In nghiêng (Italic)"
-                                          >
-                                              I
-                                          </button>
-                                          <button
-                                              type="button"
-                                              onClick={() => setFields(fields.map(field => field.id === f.id ? { ...field, isUnderline: !field.isUnderline } : field))}
-                                              className={`px-3 py-1 rounded text-xs underline transition-all cursor-pointer ${
-                                                  f.isUnderline ? 'bg-indigo-600 text-white shadow-xs' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300'
-                                              }`}
-                                              title="Gạch chân (Underline)"
-                                          >
-                                              U
-                                          </button>
-                                      </div>
-                                  </div>
-                                 <div className="flex gap-2 items-end">
-                                     <div className="flex-1 flex flex-col gap-1">
-                                         <span className="font-semibold text-gray-700">Cỡ chữ (px):</span>
-                                         <input 
-                                            type="number" 
-                                            value={f.fontSize || 14} 
-                                            min={6}
-                                            max={120}
-                                            onChange={(e) => {
-                                              const size = parseInt(e.target.value) || 14;
-                                              setFields(fields.map(field => field.id === f.id ? { ...field, fontSize: size } : field));
-                                            }}
-                                            className={`w-full border border-gray-300 rounded px-2 py-1 outline-none bg-white ${focusRingClass}`}
-                                         />
-                                     </div>
-                                     <div className="flex flex-col gap-1">
-                                         <span className="font-semibold text-gray-700">Màu chữ:</span>
-                                         <div className="flex items-center gap-1">
-                                             <input 
-                                                 type="color"
-                                                 value={f.color || '#000000'}
-                                                 onChange={(e) => setFields(fields.map(field => field.id === f.id ? { ...field, color: e.target.value } : field))}
-                                                 className="w-6 h-6 rounded border border-gray-300 cursor-pointer p-0 bg-transparent"
-                                             />
-                                         </div>
-                                     </div>
-                                 </div>
-                                 <div className="flex items-center gap-1.5 pt-1">
-                                     <span className="text-[10px] text-gray-500">Màu nhanh:</span>
-                                     {['#000000', '#FF0000', '#0000FF', '#008000', '#800080'].map(c => (
-                                         <button
-                                             key={c}
-                                             type="button"
-                                             onClick={() => setFields(fields.map(field => field.id === f.id ? { ...field, color: c } : field))}
-                                             className="w-4 h-4 rounded-full border border-gray-300 shadow-xs cursor-pointer flex items-center justify-center transition-transform hover:scale-110"
-                                             style={{ backgroundColor: c }}
-                                         >
-                                             {(f.color || '#000000') === c && <span className="w-1 h-1 bg-white rounded-full" />}
-                                         </button>
-                                     ))}
-                                 </div>
-                             </>
-                         ) : (
-                             <div className="flex flex-col gap-1">
-                                 <span className="font-semibold text-gray-700">Tên trường chữ ký:</span>
+                         <div className="flex flex-col gap-1">
+                             <span className="font-semibold text-gray-700">Tên trường văn bản:</span>
+                             <input 
+                                type="text" 
+                                value={f.name} 
+                                onChange={(e) => {
+                                  setFields(fields.map(field => field.id === f.id ? { ...field, name: e.target.value } : field));
+                                }}
+                                className={`w-full border border-gray-300 rounded px-2 py-1 outline-none bg-white ${focusRingClass}`}
+                             />
+                         </div>
+                         <div className="flex flex-col gap-1">
+                             <span className="font-semibold text-gray-700">Nội dung chữ hiển thị:</span>
+                             <textarea 
+                                value={f.textValue || ''} 
+                                placeholder="Nhập nội dung văn bản..."
+                                onChange={(e) => {
+                                  setFields(fields.map(field => field.id === f.id ? { ...field, textValue: e.target.value } : field));
+                                }}
+                                rows={2}
+                                className={`w-full border border-gray-300 rounded px-2 py-1 outline-none bg-white ${focusRingClass} resize-none`}
+                             />
+                         </div>
+                         <div className="flex gap-2">
+                             <div className="flex-1 flex flex-col gap-1">
+                                 <span className="font-semibold text-gray-700">Cỡ chữ (px):</span>
                                  <input 
-                                    type="text" 
-                                    value={f.name} 
+                                    type="number" 
+                                    value={f.fontSize || 12} 
                                     onChange={(e) => {
-                                      setFields(fields.map(field => field.id === f.id ? { ...field, name: e.target.value } : field));
+                                      const size = parseInt(e.target.value) || 12;
+                                      setFields(fields.map(field => field.id === f.id ? { ...field, fontSize: size } : field));
                                     }}
                                     className={`w-full border border-gray-300 rounded px-2 py-1 outline-none bg-white ${focusRingClass}`}
                                  />
                              </div>
-                         )}
+                         </div>
                      </div>
                  </div>
              )}
@@ -3207,282 +3734,312 @@ export default function App() {
   }
 
   function renderDrawingBox(pageIndex: number) {
-    if (!drawing || drawing.pageIndex !== pageIndex) return null;
-    const isText = activeTool === 'Text Field' || activeTool === 'Add Text';
-    const isHighlight = activeTool === 'Highlight';
-
-    const borderClass = isHighlight ? 'border-amber-500 bg-amber-200/50' : (isText ? 'border-blue-600 bg-blue-50' : 'border-indigo-600 bg-indigo-50');
-    const labelBg = isHighlight ? 'bg-amber-500' : (isText ? 'bg-blue-600' : 'bg-indigo-600');
-    const label = isHighlight ? 'Highlight 🖍️' : (isText ? 'Thêm chữ' : 'Trường chữ ký');
-    return (
-      <div
-        className={`absolute border border-dashed bg-opacity-40 ${borderClass}`}
-        style={{
-          left: Math.min(drawing.startX, drawing.currentX),
-          top: Math.min(drawing.startY, drawing.currentY),
-          width: Math.abs(drawing.currentX - drawing.startX),
-          height: Math.abs(drawing.currentY - drawing.startY)
-        }}
-      >
-        <div className={`absolute top-0 left-0 ${labelBg} text-white text-[10px] px-1.5 py-0.5 whitespace-nowrap transform -translate-y-[calc(100%+1px)] -translate-x-[1px] leading-none rounded-t font-semibold`}>
-          {label}
+     if (!drawing || drawing.pageIndex !== pageIndex) return null;
+     if (activeTool === 'Highlight') {
+       return (
+         <div 
+            className="absolute border-2 border-amber-500 border-dashed rounded-xs z-30 pointer-events-none"
+            style={{ 
+                left: Math.min(drawing.startX, drawing.currentX), 
+                top: Math.min(drawing.startY, drawing.currentY), 
+                width: Math.abs(drawing.currentX - drawing.startX), 
+                height: Math.abs(drawing.currentY - drawing.startY),
+                backgroundColor: highlightColor,
+                opacity: highlightOpacity,
+                mixBlendMode: 'multiply'
+            }}
+         >
+            <div className="absolute top-0 left-0 bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 whitespace-nowrap transform -translate-y-[calc(100%+1px)] -translate-x-[1px] leading-none rounded-t shadow-xs">
+              Tô sáng (Highlight)
+            </div>
+         </div>
+       );
+     }
+     const isText = activeTool === 'Text Field';
+     const borderClass = isText ? 'border-blue-600 bg-blue-50' : 'border-indigo-600 bg-indigo-50';
+     const labelBg = isText ? 'bg-blue-600' : 'bg-indigo-600';
+     const label = isText ? 'Trường văn bản' : 'Trường chữ ký';
+     return (
+        <div 
+           className={`absolute border border-dashed bg-opacity-40 ${borderClass}`}
+           style={{ 
+               left: Math.min(drawing.startX, drawing.currentX), 
+               top: Math.min(drawing.startY, drawing.currentY), 
+               width: Math.abs(drawing.currentX - drawing.startX), 
+               height: Math.abs(drawing.currentY - drawing.startY) 
+           }}
+        >
+              {/* Tab Header Preview */}
+              <div className={`absolute top-0 left-0 ${labelBg} text-white text-[10px] px-1.5 py-0.5 whitespace-nowrap transform -translate-y-[calc(100%+1px)] -translate-x-[1px] leading-none rounded-t`}>
+                  {label}
+              </div>
         </div>
-      </div>
-    );
+     );
   }
 
-  /** Cập nhật thuộc tính của text item mà không đóng inline edit */
-  const handleUpdateText = (id: string, updates: Partial<PdfTextItem>) => {
-    setPdfTexts(prev => prev.map(t => t.id === id ? { ...t, ...updates, isModified: true } : t));
-  };
-
-  /** Floating format bar nổi ngay trên text đang edit, giống Foxit */
-  function renderFloatingFormatBar(t: PdfTextItem, baselineX: number, bottomOffsetForBaseline: number) {
-    const handlePropChange = (updates: Partial<PdfTextItem>) => handleUpdateText(t.id, updates);
-    const detectedFont = (t.fontName || '').replace(/^[A-Z]{6}\+/, '') || 'Auto';
-    const fontSize = Math.round(t.customFontSize || t.fontSize);
-    return (
-      <div
-        data-floating-bar="true"
-        className="absolute z-[60] flex items-center gap-0.5 bg-white border border-gray-300 shadow-xl rounded-lg px-2 py-1 select-none"
-        style={{
-          left: baselineX,
-          bottom: bottomOffsetForBaseline + (t.customFontSize || t.fontSize) * 1.5 + 8,
-          minWidth: 280,
-          whiteSpace: 'nowrap'
-        }}
-        onMouseDown={(e) => {
-          // Ngăn mất focus của contentEditable khi nhấp chuột vào các nút định dạng
-          e.preventDefault();
-        }}
-      >
-        {/* Dropdown chọn phông chữ nhanh hỗ trợ tự sửa phông sai */}
-        <select
-          value={t.customFontFamily || ''}
-          onChange={(e) => handlePropChange({ customFontFamily: e.target.value || undefined })}
-          className="text-[10px] border border-gray-200 rounded px-1.5 py-0.5 bg-gray-50 text-gray-700 outline-none font-semibold cursor-pointer max-w-[110px]"
-          title={`Font gốc: ${detectedFont}. Chọn phông chữ khác nếu tự động nhận dạng bị sai.`}
-        >
-          <option value="">Tự động ({detectedFont.slice(0, 8)})</option>
-          <option value="sans-serif">Arial (Không chân)</option>
-          <option value="serif">Times New Roman (Có chân)</option>
-          <option value="monospace">Courier New (Mã máy)</option>
-        </select>
-
-        {/* Cỡ chữ */}
-        <input
-          type="number"
-          min={4} max={150} step={1}
-          value={fontSize}
-          onChange={(e) => handlePropChange({ customFontSize: parseInt(e.target.value) || t.fontSize })}
-          className="w-10 text-center border border-gray-200 rounded text-[11px] py-0.5 outline-none focus:border-blue-400 bg-white font-mono"
-        />
-
-        <div className="w-px h-4 bg-gray-200 mx-0.5" />
-
-        {/* Bold */}
-        <button
-          type="button"
-          tabIndex={-1}
-          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handlePropChange({ isBold: !t.isBold }); }}
-          onClick={(e) => { e.preventDefault(); e.stopPropagation(); handlePropChange({ isBold: !t.isBold }); }}
-          className={`p-1 rounded transition-colors ${
-            t.isBold ? 'bg-indigo-600 text-white font-bold shadow-xs' : 'hover:bg-gray-100 text-gray-700'
-          }`}
-          title="In đậm (Bold)"
-        >
-          <Bold className="w-3.5 h-3.5 stroke-[3]" />
-        </button>
-
-        {/* Italic */}
-        <button
-          type="button"
-          tabIndex={-1}
-          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); handlePropChange({ isItalic: !t.isItalic }); }}
-          onClick={(e) => { e.preventDefault(); e.stopPropagation(); handlePropChange({ isItalic: !t.isItalic }); }}
-          className={`p-1 rounded transition-colors ${
-            t.isItalic ? 'bg-indigo-600 text-white italic shadow-xs' : 'hover:bg-gray-100 text-gray-700'
-          }`}
-          title="In nghiêng (Italic)"
-        >
-          <Italic className="w-3.5 h-3.5" />
-        </button>
-
-        <div className="w-px h-4 bg-gray-200 mx-0.5" />
-
-        {/* Màu sắc */}
-        <label className="flex items-center gap-1 cursor-pointer" title="Màu chữ">
-          <div className="w-4 h-4 rounded-full border border-gray-300" style={{ backgroundColor: t.customColor || '#000000' }} />
-          <input
-            type="color"
-            value={t.customColor || '#000000'}
-            onChange={(e) => handlePropChange({ customColor: e.target.value })}
-            className="absolute opacity-0 w-0 h-0"
-          />
-        </label>
-
-        <div className="w-px h-4 bg-gray-200 mx-0.5" />
-
-        {/* Xóa đè nền */}
-        <button
-          tabIndex={-1}
-          onClick={() => handlePropChange({ hasBackground: t.hasBackground === false })}
-          className={`p-1 rounded text-[10px] font-semibold transition-colors ${
-            t.hasBackground !== false ? 'bg-indigo-100 text-indigo-700' : 'hover:bg-gray-100 text-gray-500'
-          }`}
-          title="Che vùng chữ cũ bên dưới"
-        >
-          Che nền
-        </button>
-
-        <div className="w-px h-4 bg-gray-200 mx-0.5" />
-
-        {/* Mở sidebar định dạng nâng cao */}
-        <button
-          tabIndex={-1}
-          onClick={() => setSelectedTextId(t.id)}
-          className="p-1 rounded hover:bg-gray-100 text-gray-600 flex items-center gap-1"
-          title="Định dạng nâng cao (căn lề, vị trí, góc xoay)..."
-        >
-          <Settings2 className="w-3.5 h-3.5" />
-          <span className="text-[10px]">Thêm</span>
-        </button>
-
-        {/* Đóng chỉnh sửa */}
-        <button
-          tabIndex={-1}
-          onClick={() => { setEditingTextId(null); setSelectedTextId(null); }}
-          className="ml-1 p-1 rounded hover:bg-red-50 text-gray-400 hover:text-red-500"
-          title="Đóng (Esc)"
-        >
-          <X className="w-3 h-3" />
-        </button>
-      </div>
-    );
+  function handleSelectText(t: PdfTextItem) {
+    setSelectedTextId(t.id);
+    setEditingTextId(t.id);
+    ensureFontsLoaded();
+    if (!t.isModified) {
+      setPdfTexts(prev => prev.map(item => {
+        if (item.id === t.id) {
+          return { ...item, isModified: true };
+        }
+        return item;
+      }));
+    }
   }
 
-  /** Render tất cả văn bản PDF (cả chữ gốc và chữ đã sửa) trên một trang */
-  function renderPdfTexts(pageIndex: number) {
-    const isEditMode = activeTool === 'Edit Text';
-
+  function renderOriginalTexts(pageIndex: number) {
+    if (activeTool !== 'Edit Text') return null;
     return pdfTexts
       .filter(t => t.pageIndex === pageIndex)
       .map(t => {
+        if (t.isModified) return null;
+
+        const borderStyleClass = showTextHighlights 
+          ? "border border-dashed border-indigo-400/50 bg-indigo-50/15 hover:border-blue-600 hover:bg-blue-100/30" 
+          : "border border-dashed border-transparent hover:border-blue-500/70 hover:bg-blue-100/25";
+
+        return (
+          <div
+            key={t.id}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleSelectText(t);
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            className={`absolute cursor-pointer transition-all z-20 ${borderStyleClass} rounded-xs`}
+            style={{
+              left: t.x - 2,
+              top: t.y - 2,
+              width: t.width + 4,
+              height: t.height + 4,
+            }}
+          />
+        );
+      });
+  }
+
+  function renderModifiedTextsOverlay(pageIndex: number) {
+    return pdfTexts
+      .filter(t => t.pageIndex === pageIndex && t.isModified)
+      .map(t => {
+        const isSelected = selectedTextId === t.id;
         const isEditing = editingTextId === t.id;
-        const isModified = t.isModified;
-
-        // Nếu không ở chế độ sửa và chữ này chưa bị chỉnh sửa, không cần vẽ đè lên canvas
-        if (!isEditMode && !isModified) return null;
-
-        const fontFamily = getFontFamily(t.customFontFamily || 'serif');
-        const fontStyle = t.isItalic ? 'italic' : 'normal';
-        const fontWeight = t.isBold ? 'bold' : 'normal';
+        const fontFamily = getFontFamily(t.customFontFamily || t.fontName);
+        const useBold = t.isBold;
+        const useItalic = t.isItalic;
+        const fontStyle = useItalic ? 'italic' : 'normal';
+        const fontWeight = useBold ? 700 : 400;
         const customColor = t.customColor || '#000000';
         const hasBg = t.hasBackground !== false;
 
-        const pageHeight = pages[pageIndex]?.height || 800;
+        const pageWidth = pages[pageIndex]?.width || 800;
+        // Font size on 1.5x scaled PDF canvas
         const sizeToUse = (t.customFontSize || t.fontSize) * 1.5;
 
-        // Vị trí chữ
-        const baselineX = t.x + (t.offsetX || 0);
-        const baselineY = t.y + t.height + (t.offsetY || 0);
-        const bottomOffset = pageHeight - baselineY;
-        const descenderShift = sizeToUse * 0.31;
-        const bottomOffsetForBaseline = bottomOffset - descenderShift;
+        // Position coordinates aligned with the dashed highlight box (top-left)
+        const posX = t.x + (t.offsetX || 0) - 2;
+        const posY = t.y + (t.offsetY || 0) - 2;
 
-        // Trạng thái hiển thị chữ:
-        // - Nếu đang sửa hoặc đã sửa đổi -> hiển thị màu thật, có nền trắng đè lên canvas để xóa chữ cũ
-        // - Nếu chưa sửa và chưa edit -> hiển thị trong suốt (color: transparent) để người dùng thấy chữ thật của canvas ở dưới nhưng vẫn click chuột được vào đúng ký tự
-        const shouldShowReal = isEditing || isModified;
-        const textColor = shouldShowReal ? customColor : 'transparent';
-        const bgColor = (shouldShowReal && hasBg) ? 'white' : 'transparent';
+        if (isEditing) {
+          const maxAvailableWidth = Math.max(300, pageWidth - posX - 20);
+          // Wide enough to display the full sentence comfortably up to page width
+          const editBoxWidth = Math.min(Math.max(t.width + 50, 320), maxAvailableWidth);
 
-        const textStyle: React.CSSProperties = {
-          fontSize: `${sizeToUse}px`,
-          fontFamily,
-          fontStyle,
-          fontWeight,
-          color: textColor,
-          backgroundColor: bgColor,
-          lineHeight: 1.2,
-          whiteSpace: 'nowrap',
-          display: 'inline-block',
-        };
+          return (
+            <div
+              key={t.id}
+              className="absolute z-50 bg-white border-2 border-indigo-600 rounded-md shadow-2xl"
+              style={{
+                left: Math.max(2, posX),
+                top: Math.max(2, posY),
+                width: editBoxWidth,
+                minHeight: Math.max(t.height + 6, sizeToUse + 8),
+                transform: `rotate(${t.rotation || 0}deg)`,
+                transformOrigin: 'left top',
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              {/* Floating Action Bar ABOVE the box so it NEVER covers any text */}
+              <div 
+                className="absolute -top-7 right-0 flex items-center gap-1.5 bg-gray-900/95 text-white text-[10px] px-2 py-0.5 rounded shadow-lg z-50 whitespace-nowrap select-none backdrop-blur-xs"
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    const el = document.getElementById(`edit-textarea-${t.id}`) as HTMLTextAreaElement | null;
+                    if (el) handleSaveTextEdit(t.id, el.value);
+                  }}
+                  className="flex items-center gap-1 text-emerald-400 hover:text-emerald-300 font-semibold cursor-pointer px-1 py-0.5"
+                >
+                  <Check className="w-3 h-3 stroke-[3]" /> Lưu (Enter)
+                </button>
+                <span className="text-gray-500">|</span>
+                <button
+                  type="button"
+                  onClick={() => setEditingTextId(null)}
+                  className="flex items-center gap-0.5 text-gray-300 hover:text-white cursor-pointer px-1 py-0.5"
+                >
+                  <X className="w-3 h-3" /> Hủy (Esc)
+                </button>
+              </div>
 
-        // Bounding box viền nét đứt khi hover giống Foxit
-        const borderStyle = isEditMode
-          ? (isEditing
-              ? '2px solid #3b82f6'
-              : (showTextHighlights ? '1px dashed #f97316' : 'none'))
-          : 'none';
+              {/* Textarea that wraps and auto-expands so NO WORDS are ever hidden or cut off */}
+              <textarea
+                id={`edit-textarea-${t.id}`}
+                defaultValue={t.text}
+                autoFocus
+                rows={1}
+                onFocus={(e) => {
+                  e.currentTarget.scrollLeft = 0;
+                  e.currentTarget.scrollTop = 0;
+                  const len = e.currentTarget.value.length;
+                  e.currentTarget.setSelectionRange(len, len);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSaveTextEdit(t.id, e.currentTarget.value);
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setEditingTextId(null);
+                  }
+                }}
+                onBlur={(e) => {
+                  handleSaveTextEdit(t.id, e.target.value);
+                }}
+                onInput={(e) => {
+                  const el = e.currentTarget;
+                  el.style.height = 'auto';
+                  el.style.height = `${Math.max(t.height + 4, el.scrollHeight)}px`;
+                }}
+                className="w-full h-full px-1 py-0.5 outline-none text-black bg-white resize-none overflow-hidden block"
+                style={{
+                  fontSize: `${sizeToUse}px`,
+                  fontFamily: fontFamily,
+                  fontStyle: fontStyle,
+                  fontWeight: fontWeight,
+                  color: customColor,
+                  lineHeight: 1.2,
+                  minHeight: `${Math.max(t.height + 2, sizeToUse + 4)}px`,
+                  WebkitFontSmoothing: 'antialiased',
+                  MozOsxFontSmoothing: 'grayscale',
+                  textRendering: 'optimizeLegibility',
+                  fontFeatureSettings: '"kern" 1, "liga" 1',
+                }}
+              />
+            </div>
+          );
+        }
 
         return (
-          <React.Fragment key={t.id}>
-            {/* Thanh công cụ nổi phía trên chữ đang edit */}
-            {isEditing && renderFloatingFormatBar(t, baselineX, bottomOffsetForBaseline)}
+          <div
+            key={t.id}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              setSelectedTextId(t.id);
+              setEditingTextId(t.id);
+            }}
+            className={`absolute cursor-pointer transition-all z-30 group select-none ${
+              isSelected ? 'ring-2 ring-indigo-600 border border-indigo-500 bg-indigo-50/15 shadow-sm' : 'hover:ring-1 hover:ring-indigo-400'
+            }`}
+            style={{
+              left: posX,
+              top: posY,
+              minWidth: t.width + 4,
+              minHeight: t.height + 4,
+              fontSize: `${sizeToUse}px`,
+              fontFamily: fontFamily,
+              fontStyle: fontStyle,
+              fontWeight: fontWeight,
+              color: customColor,
+              lineHeight: 1.2,
+              WebkitFontSmoothing: 'antialiased',
+              MozOsxFontSmoothing: 'grayscale',
+              textRendering: 'optimizeLegibility',
+              fontFeatureSettings: '"kern" 1, "liga" 1',
+              transform: `rotate(${t.rotation || 0}deg)`,
+              transformOrigin: 'left top',
+            }}
+          >
+            {hasBg && (
+              <div 
+                className="absolute bg-white pointer-events-none" 
+                style={{
+                  left: -2,
+                  top: -1,
+                  width: 'calc(100% + 4px)',
+                  height: 'calc(100% + 2px)',
+                  minWidth: `${t.width + 4}px`,
+                  minHeight: `${t.height + 2}px`,
+                  zIndex: -1,
+                }}
+              />
+            )}
+            <span className="block px-0 select-none whitespace-pre-wrap">{t.text}</span>
 
-            <div
-              contentEditable={isEditMode}
-              suppressContentEditableWarning
-              spellCheck={false}
-              className={`absolute select-text z-30 transition-all ${
-                isEditMode ? 'cursor-text hover:bg-orange-200/10' : ''
-              }`}
-              style={{
-                left: baselineX,
-                bottom: bottomOffsetForBaseline,
-                ...textStyle,
-                transform: `rotate(${t.rotation || 0}deg)`,
-                transformOrigin: 'left bottom',
-                outline: borderStyle,
-                outlineOffset: '2px',
-                minWidth: isEditing ? `${Math.max(t.width, 30)}px` : undefined,
-                minHeight: isEditing ? `${sizeToUse * 1.3}px` : undefined,
-              }}
-              onMouseDown={(e) => {
-                if (isEditMode) {
+            {/* Selection indicators & floating action pill */}
+            {isSelected && (
+              <>
+                {/* 8 anchor points */}
+                <div className="absolute -top-1 -left-1 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
+                <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
+                <div className="absolute -top-1 -right-1 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
+                <div className="absolute top-1/2 -left-1 -translate-y-1/2 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
+                <div className="absolute top-1/2 -right-1 -translate-y-1/2 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
+                <div className="absolute -bottom-1 -left-1 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
+                <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
+                <div className="absolute -bottom-1 -right-1 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
+
+                {/* Floating pill above bounding box */}
+                <div 
+                  className="absolute -top-7 left-0 flex items-center gap-1.5 bg-gray-900/90 text-white text-[10px] px-2 py-0.5 rounded shadow-lg z-50 whitespace-nowrap backdrop-blur-xs select-none"
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  <span className="font-semibold text-indigo-300">
+                    {t.customFontFamily || 'Times New Roman'} {Math.round((t.customFontSize || t.fontSize) * 10) / 10}pt {t.isBold ? '• B' : ''} {t.isItalic ? '• I' : ''}
+                  </span>
+                  <span className="text-gray-500">|</span>
+                  <button 
+                    type="button"
+                    onClick={() => setEditingTextId(t.id)} 
+                    className="hover:text-indigo-300 text-gray-200 cursor-pointer flex items-center gap-0.5 font-medium"
+                  >
+                    <Edit className="w-2.5 h-2.5" /> Sửa
+                  </button>
+                  <span className="text-gray-500">|</span>
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      handleRestoreText(t.id);
+                      setSelectedTextId(null);
+                    }} 
+                    className="hover:text-red-300 text-gray-300 cursor-pointer flex items-center gap-0.5 font-medium"
+                  >
+                    <RotateCcw className="w-2.5 h-2.5" /> Gốc
+                  </button>
+                </div>
+              </>
+            )}
+
+            {!isSelected && (
+              <button
+                onClick={(e) => {
                   e.stopPropagation();
-                }
-              }}
-              onClick={(e) => {
-                if (isEditMode) {
-                  e.stopPropagation();
-                  // Kích hoạt edit mode nếu chưa kích hoạt
-                  if (editingTextId !== t.id) {
-                    setEditingTextId(t.id);
-                    ensureFontsLoaded();
-                    if (!t.isModified) {
-                      // Đánh dấu đã modified để vẽ nền trắng xóa chữ gốc ngay lập tức
-                      setPdfTexts(prev => prev.map(item =>
-                        item.id === t.id ? { ...item, isModified: true } : item
-                      ));
-                    }
-                  }
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  e.currentTarget.blur();
-                } else if (e.key === 'Escape') {
-                  e.preventDefault();
-                  setEditingTextId(null);
-                  setSelectedTextId(null);
-                }
-              }}
-              onBlur={(e) => {
-                // Nếu click vào floating bar thì không lưu/blur
-                if ((e.relatedTarget as HTMLElement)?.closest?.('[data-floating-bar="true"]')) {
-                  e.preventDefault();
-                  return;
-                }
-                const newText = e.currentTarget.innerText.replace(/\n/g, ' ').trim();
-                handleSaveTextEdit(t.id, newText || t.text);
-              }}
-              // Render chữ trực tiếp để trình duyệt xác định caret position chuẩn xác
-              dangerouslySetInnerHTML={{ __html: t.text }}
-            />
-          </React.Fragment>
+                  handleRestoreText(t.id);
+                  if (selectedTextId === t.id) setSelectedTextId(null);
+                }}
+                className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-600 cursor-pointer shadow transition-all duration-150 z-50"
+              >
+                <X className="w-2.5 h-2.5 stroke-[3]" />
+              </button>
+            )}
+          </div>
         );
       });
   }

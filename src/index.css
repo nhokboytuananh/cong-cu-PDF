@@ -1,2 +1,51 @@
-@import url('https://fonts.googleapis.com/css2?family=Arimo:ital,wght@0,400;0,700;1,400;1,700&family=Roboto:ital,wght@0,400;0,700;1,400;1,700&family=Tinos:ital,wght@0,400;0,700;1,400;1,700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Arimo:ital,wght@0,400;0,700;1,400;1,700&family=Roboto:ital,wght@0,400;0,700;1,400;1,700&display=swap');
 @import "tailwindcss";
+
+/* Authentic Times New Roman with full Vietnamese Unicode support */
+@font-face {
+  font-family: 'Times New Roman';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: local('Times New Roman'),
+       local('TimesNewRomanPSMT'),
+       local('TimesNewRoman'),
+       url('https://cdn.jsdelivr.net/gh/codxse/linux-mandatory-font@master/mac-fonts/times.ttf') format('truetype'),
+       url('https://raw.githubusercontent.com/codxse/linux-mandatory-font/master/mac-fonts/times.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Times New Roman';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: local('Times New Roman Bold'),
+       local('TimesNewRomanPS-BoldMT'),
+       local('TimesNewRoman-Bold'),
+       url('https://cdn.jsdelivr.net/gh/codxse/linux-mandatory-font@master/mac-fonts/timesbd.ttf') format('truetype'),
+       url('https://raw.githubusercontent.com/codxse/linux-mandatory-font/master/mac-fonts/timesbd.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Times New Roman';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: local('Times New Roman Italic'),
+       local('TimesNewRomanPS-ItalicMT'),
+       local('TimesNewRoman-Italic'),
+       url('https://cdn.jsdelivr.net/gh/codxse/linux-mandatory-font@master/mac-fonts/timesi.ttf') format('truetype'),
+       url('https://raw.githubusercontent.com/codxse/linux-mandatory-font/master/mac-fonts/timesi.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Times New Roman';
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: local('Times New Roman Bold Italic'),
+       local('TimesNewRomanPS-BoldItalicMT'),
+       local('TimesNewRoman-BoldItalic'),
+       url('https://cdn.jsdelivr.net/gh/codxse/linux-mandatory-font@master/mac-fonts/timesbi.ttf') format('truetype'),
+       url('https://raw.githubusercontent.com/codxse/linux-mandatory-font/master/mac-fonts/timesbi.ttf') format('truetype');
+}
