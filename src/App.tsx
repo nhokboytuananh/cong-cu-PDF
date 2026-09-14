@@ -5,7 +5,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   PenSquare, Layout, FileDown, X, MousePointer2, FileUp, Loader2, FilePlus, Trash2, Type, ArrowUp, ArrowDown, Edit, HelpCircle, Info, CheckCircle2, MousePointerClick,
-  RotateCcw, RotateCw, PanelLeft, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Bold, Italic, Check, Sparkles, Highlighter
+  RotateCcw, RotateCw, PanelLeft, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Bold, Italic, Check, Sparkles, Highlighter, Eraser,
+  AlignLeft, AlignCenter, AlignRight, Square
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as pdfLib from 'pdf-lib';
@@ -13,7 +14,7 @@ import { PDFDocument } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import { PageThumbnailSidebar } from './components/PageThumbnailSidebar';
 import { ZoomControls } from './components/ZoomControls';
-import { HighlightItem } from './types';
+import { HighlightItem, TextBoxItem } from './types';
 
 // Configure pdfjs worker url
 // @ts-ignore
@@ -49,12 +50,12 @@ type PdfTextItem = {
 };
 
 export const HIGHLIGHT_COLORS = [
-  { name: 'Vàng', hex: '#fde047', bgClass: 'bg-yellow-300' },
-  { name: 'Xanh lá', hex: '#86efac', bgClass: 'bg-green-300' },
-  { name: 'Xanh dương', hex: '#7dd3fc', bgClass: 'bg-sky-300' },
-  { name: 'Hồng', hex: '#f472b6', bgClass: 'bg-pink-400' },
-  { name: 'Cam', hex: '#fdba74', bgClass: 'bg-orange-300' },
-  { name: 'Tím', hex: '#d8b4fe', bgClass: 'bg-purple-300' },
+  { name: 'Vàng', label: 'Vàng', hex: '#fde047', color: '#fde047', bgClass: 'bg-yellow-300' },
+  { name: 'Xanh lá', label: 'Xanh lá', hex: '#86efac', color: '#86efac', bgClass: 'bg-green-300' },
+  { name: 'Xanh dương', label: 'Xanh dương', hex: '#7dd3fc', color: '#7dd3fc', bgClass: 'bg-sky-300' },
+  { name: 'Hồng', label: 'Hồng', hex: '#f472b6', color: '#f472b6', bgClass: 'bg-pink-400' },
+  { name: 'Cam', label: 'Cam', hex: '#fdba74', color: '#fdba74', bgClass: 'bg-orange-300' },
+  { name: 'Tím', label: 'Tím', hex: '#d8b4fe', color: '#d8b4fe', bgClass: 'bg-purple-300' },
 ];
 
 const getIsSerif = (fontName: string): boolean => {
@@ -272,9 +273,10 @@ export default function App() {
   const [selectedHighlightId, setSelectedHighlightId] = useState<string | null>(null);
   const [highlightColor, setHighlightColor] = useState<string>('#fde047');
   const [highlightOpacity, setHighlightOpacity] = useState<number>(0.45);
+  const [highlightToolMode, setHighlightToolMode] = useState<'highlight' | 'eraser'>('highlight');
   const [highlightInteraction, setHighlightInteraction] = useState<{
     id: string;
-    type: 'drag' | 'e';
+    type: 'drag' | 'e' | 's' | 'se';
     startX: number;
     startY: number;
     originalX: number;
@@ -283,6 +285,62 @@ export default function App() {
     originalHeight: number;
     pageIndex: number;
   } | null>(null);
+
+  // Text Box (Thêm chữ) states
+  const [textBoxes, setTextBoxes] = useState<TextBoxItem[]>([]);
+  const [selectedTextBoxId, setSelectedTextBoxId] = useState<string | null>(null);
+  const [editingTextBoxId, setEditingTextBoxId] = useState<string | null>(null);
+  const [tbFontFamily, setTbFontFamily] = useState<string>('Times New Roman');
+  const [tbFontSize, setTbFontSize] = useState<number>(12);
+  const [tbIsBold, setTbIsBold] = useState<boolean>(false);
+  const [tbIsItalic, setTbIsItalic] = useState<boolean>(false);
+  const [tbColor, setTbColor] = useState<string>('#000000');
+  const [tbTextAlign, setTbTextAlign] = useState<'left' | 'center' | 'right'>('left');
+  const [tbHasBackground, setTbHasBackground] = useState<boolean>(false); // false = trong suốt, true = nền trắng
+  const [tbHasBorder, setTbHasBorder] = useState<boolean>(false); // false = không viền, true = có viền
+  const [deletedTextBoxes, setDeletedTextBoxes] = useState<TextBoxItem[]>([]);
+  const initialLoadedTextBoxesRef = useRef<TextBoxItem[]>([]);
+  const [textBoxInteraction, setTextBoxInteraction] = useState<{
+    id: string;
+    type: 'drag' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+    startX: number;
+    startY: number;
+    originalX: number;
+    originalY: number;
+    originalWidth: number;
+    originalHeight: number;
+    pageIndex: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (selectedTextBoxId) {
+      const tb = textBoxes.find(t => t.id === selectedTextBoxId);
+      if (tb) {
+        setTbFontFamily(tb.fontFamily || 'Times New Roman');
+        setTbFontSize(tb.fontSize || 12);
+        setTbIsBold(!!tb.isBold);
+        setTbIsItalic(!!tb.isItalic);
+        setTbColor(tb.color || '#000000');
+        setTbTextAlign(tb.textAlign || 'left');
+        setTbHasBackground(!!tb.hasBackground);
+        setTbHasBorder(!!tb.hasBorder);
+      }
+    }
+  }, [selectedTextBoxId]);
+
+  const updateCurrentTextBox = (updates: Partial<TextBoxItem>) => {
+    if (selectedTextBoxId) {
+      setTextBoxes(prev => prev.map(tb => tb.id === selectedTextBoxId ? { ...tb, ...updates } : tb));
+    }
+    if (updates.fontFamily !== undefined) setTbFontFamily(updates.fontFamily);
+    if (updates.fontSize !== undefined) setTbFontSize(updates.fontSize);
+    if (updates.isBold !== undefined) setTbIsBold(updates.isBold);
+    if (updates.isItalic !== undefined) setTbIsItalic(updates.isItalic);
+    if (updates.color !== undefined) setTbColor(updates.color);
+    if (updates.textAlign !== undefined) setTbTextAlign(updates.textAlign);
+    if (updates.hasBackground !== undefined) setTbHasBackground(updates.hasBackground);
+    if (updates.hasBorder !== undefined) setTbHasBorder(updates.hasBorder);
+  };
 
   // Lazy-loaded high-quality Vietnamese fonts
   const [fontSerifRegular, setFontSerifRegular] = useState<Uint8Array | null>(null);
@@ -294,17 +352,39 @@ export default function App() {
 
   const [fontsLoading, setFontsLoading] = useState<boolean>(false);
   const [fontsLoaded, setFontsLoaded] = useState<boolean>(false);
-  const fontsLoadingPromiseRef = useRef<Promise<void> | null>(null);
+  const fontsLoadingPromiseRef = useRef<Promise<{
+    serifRegular: Uint8Array | null;
+    serifBold: Uint8Array | null;
+    serifItalic: Uint8Array | null;
+    sansRegular: Uint8Array | null;
+    sansBold: Uint8Array | null;
+    sansItalic: Uint8Array | null;
+  }> | null>(null);
+
+  const fontsRef = useRef<{
+    serifRegular: Uint8Array | null;
+    serifBold: Uint8Array | null;
+    serifItalic: Uint8Array | null;
+    sansRegular: Uint8Array | null;
+    sansBold: Uint8Array | null;
+    sansItalic: Uint8Array | null;
+  }>({
+    serifRegular: null,
+    serifBold: null,
+    serifItalic: null,
+    sansRegular: null,
+    sansBold: null,
+    sansItalic: null,
+  });
 
   const ensureFontsLoaded = async () => {
-    if (fontsLoaded) return;
+    if (fontsLoaded && fontsRef.current.serifRegular) return fontsRef.current;
     if (fontsLoadingPromiseRef.current) {
-      await fontsLoadingPromiseRef.current;
-      return;
+      return await fontsLoadingPromiseRef.current;
     }
 
-    let resolvePromise: () => void = () => {};
-    fontsLoadingPromiseRef.current = new Promise<void>((resolve) => {
+    let resolvePromise: (val: any) => void = () => {};
+    fontsLoadingPromiseRef.current = new Promise((resolve) => {
       resolvePromise = resolve;
     });
 
@@ -342,22 +422,19 @@ export default function App() {
       ];
 
       const sansRegularUrls = [
-        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/roboto/static/Roboto-Regular.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Regular.ttf',
-        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/arimo/Arimo-Regular.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/arimo/Arimo-Regular.ttf'
+        'https://cdn.jsdelivr.net/gh/codxse/linux-mandatory-font@master/mac-fonts/arial.ttf',
+        'https://raw.githubusercontent.com/codxse/linux-mandatory-font/master/mac-fonts/arial.ttf',
+        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/arimo/Arimo%5Bwght%5D.ttf'
       ];
       const sansBoldUrls = [
-        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/roboto/static/Roboto-Bold.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Bold.ttf',
-        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/arimo/Arimo-Bold.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/arimo/Arimo-Bold.ttf'
+        'https://cdn.jsdelivr.net/gh/codxse/linux-mandatory-font@master/mac-fonts/arialbd.ttf',
+        'https://raw.githubusercontent.com/codxse/linux-mandatory-font/master/mac-fonts/arialbd.ttf',
+        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/arimo/Arimo%5Bwght%5D.ttf'
       ];
       const sansItalicUrls = [
-        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/roboto/static/Roboto-Italic.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Italic.ttf',
-        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/arimo/Arimo-Italic.ttf',
-        'https://raw.githubusercontent.com/google/fonts/main/ofl/arimo/Arimo-Italic.ttf'
+        'https://cdn.jsdelivr.net/gh/codxse/linux-mandatory-font@master/mac-fonts/ariali.ttf',
+        'https://raw.githubusercontent.com/codxse/linux-mandatory-font/master/mac-fonts/ariali.ttf',
+        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/arimo/Arimo%5Bwght%5D.ttf'
       ];
 
       const [sr, sb, si, sar, sab, sai] = await Promise.all([
@@ -369,20 +446,22 @@ export default function App() {
         loadFontWithFallbacks(sansItalicUrls)
       ]);
 
-      if (sr) setFontSerifRegular(sr);
-      if (sb) setFontSerifBold(sb);
-      if (si) setFontSerifItalic(si);
-      if (sar) setFontSansRegular(sar);
-      if (sab) setFontSansBold(sab);
-      if (sai) setFontSansItalic(sai);
+      if (sr) { setFontSerifRegular(sr); fontsRef.current.serifRegular = sr; }
+      if (sb) { setFontSerifBold(sb); fontsRef.current.serifBold = sb; }
+      if (si) { setFontSerifItalic(si); fontsRef.current.serifItalic = si; }
+      if (sar) { setFontSansRegular(sar); fontsRef.current.sansRegular = sar; }
+      if (sab) { setFontSansBold(sab); fontsRef.current.sansBold = sab; }
+      if (sai) { setFontSansItalic(sai); fontsRef.current.sansItalic = sai; }
 
       setFontsLoaded(true);
-      console.log("All Vietnamese fonts loaded successfully.");
+      console.log('All Vietnamese fonts loaded successfully.');
+      return fontsRef.current;
     } catch (err) {
-      console.error("Error loading fonts:", err);
+      console.error('Error loading fonts:', err);
+      return fontsRef.current;
     } finally {
       setFontsLoading(false);
-      resolvePromise();
+      resolvePromise(fontsRef.current);
       fontsLoadingPromiseRef.current = null;
     }
   };
@@ -399,10 +478,20 @@ export default function App() {
         setSelectedFieldId(null);
         setSelectedTextId(null);
         setSelectedHighlightId(null);
-      } else if ((e.key === 'Delete' || e.key === 'Backspace') && !editingTextId) {
+        setSelectedTextBoxId(null);
+        setEditingTextBoxId(null);
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && !editingTextId && !editingTextBoxId) {
         const activeTag = document.activeElement?.tagName ? document.activeElement.tagName.toLowerCase() : '';
         if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') return;
-        if (selectedHighlightId) {
+        if (selectedTextBoxId) {
+          e.preventDefault();
+          const deletedItem = textBoxes.find(tb => tb.id === selectedTextBoxId);
+          if (deletedItem && initialLoadedTextBoxesRef.current.some(itb => itb.id === deletedItem.id)) {
+            setDeletedTextBoxes(prev => [...prev, deletedItem]);
+          }
+          setTextBoxes(prev => prev.filter(tb => tb.id !== selectedTextBoxId));
+          setSelectedTextBoxId(null);
+        } else if (selectedHighlightId) {
           e.preventDefault();
           setHighlights(prev => prev.filter(h => h.id !== selectedHighlightId));
           setSelectedHighlightId(null);
@@ -417,7 +506,7 @@ export default function App() {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [editingTextId, selectedHighlightId, selectedFieldId]);
+  }, [editingTextId, editingTextBoxId, selectedHighlightId, selectedFieldId, selectedTextBoxId, textBoxes]);
 
   useEffect(() => {
     if (documentName && documentName !== 'Bản nháp') {
@@ -438,12 +527,12 @@ export default function App() {
           setVietnameseFontBytes(new Uint8Array(buffer));
           console.log("Vietnamese Times New Roman font loaded successfully.");
         } else {
-          // fallback to Roboto
-          const resp2 = await fetch('https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/roboto/static/Roboto-Regular.ttf');
+          // fallback to Arial
+          const resp2 = await fetch('https://cdn.jsdelivr.net/gh/codxse/linux-mandatory-font@master/mac-fonts/arial.ttf');
           if (resp2.ok) {
             const buffer = await resp2.arrayBuffer();
             setVietnameseFontBytes(new Uint8Array(buffer));
-            console.log("Vietnamese font (Roboto fallback) loaded.");
+            console.log("Vietnamese font (Arial fallback) loaded.");
           }
         }
       } catch (err) {
@@ -1100,7 +1189,8 @@ export default function App() {
 
       await page.render({
         canvasContext: context,
-        viewport: viewport
+        viewport: viewport,
+        annotationMode: 0, // 0 = AnnotationMode.DISABLE, keeps canvas clean so highlights can be removed dynamically
       } as any).promise;
 
       parsedPages.push({
@@ -1255,6 +1345,259 @@ export default function App() {
     return parsedPages;
   };
 
+  const extractHighlightsFromPdf = (pdfDoc: PDFDocument, parsedPages: PdfPage[]): HighlightItem[] => {
+    const result: HighlightItem[] = [];
+    try {
+      const docPages = pdfDoc.getPages();
+      for (let pIdx = 0; pIdx < docPages.length; pIdx++) {
+        const page = docPages[pIdx];
+        const parsedPage = parsedPages[pIdx];
+        if (!parsedPage) continue;
+        const { width, height } = page.getSize();
+        let boxX = 0;
+        let boxY = 0;
+        let visibleWidth = width;
+        let visibleHeight = height;
+        try {
+          const cropBox = page.getCropBox();
+          if (cropBox) {
+            boxX = cropBox.x || 0;
+            boxY = cropBox.y || 0;
+            visibleWidth = cropBox.width;
+            visibleHeight = cropBox.height;
+          }
+        } catch (e) {
+          // ignore
+        }
+        const scaleX = visibleWidth / parsedPage.width;
+        const scaleY = visibleHeight / parsedPage.height;
+
+        const annots = page.node.lookup(pdfLib.PDFName.of('Annots'));
+        if (annots && typeof (annots as any).size === 'function') {
+          const annotCount = (annots as any).size();
+          for (let aIdx = 0; aIdx < annotCount; aIdx++) {
+            const annot = (annots as any).lookup(aIdx);
+            if (!annot) continue;
+            const subtype = annot.lookup(pdfLib.PDFName.of('Subtype'))?.toString();
+            if (subtype === '/Highlight') {
+              const rectObj = annot.lookup(pdfLib.PDFName.of('Rect'));
+              if (rectObj && typeof (rectObj as any).asArray === 'function') {
+                const coords = (rectObj as any).asArray().map((v: any) => typeof v.asNumber === 'function' ? v.asNumber() : Number(v));
+                if (coords.length >= 4) {
+                  const rectX = Math.min(coords[0], coords[2]);
+                  const rectY = Math.min(coords[1], coords[3]);
+                  const rectW = Math.abs(coords[2] - coords[0]);
+                  const rectH = Math.abs(coords[3] - coords[1]);
+
+                  const x = (rectX - boxX) / scaleX;
+                  const widthVal = rectW / scaleX;
+                  const y = (visibleHeight - (rectY + rectH - boxY)) / scaleY;
+                  const heightVal = rectH / scaleY;
+
+                  let colorHex = '#fde047';
+                  const colorObj = annot.lookup(pdfLib.PDFName.of('C'));
+                  if (colorObj && typeof (colorObj as any).asArray === 'function') {
+                    const rgbVals = (colorObj as any).asArray().map((v: any) => typeof v.asNumber === 'function' ? v.asNumber() : Number(v));
+                    if (rgbVals.length >= 3) {
+                      const r = Math.round(rgbVals[0] * 255).toString(16).padStart(2, '0');
+                      const g = Math.round(rgbVals[1] * 255).toString(16).padStart(2, '0');
+                      const b = Math.round(rgbVals[2] * 255).toString(16).padStart(2, '0');
+                      colorHex = `#${r}${g}${b}`;
+                    }
+                  }
+
+                  let opacity = 0.45;
+                  const caObj = annot.lookup(pdfLib.PDFName.of('CA'));
+                  if (caObj && typeof (caObj as any).asNumber === 'function') {
+                    opacity = (caObj as any).asNumber();
+                  }
+
+                  result.push({
+                    id: `hl-pdf-${pIdx}-${aIdx}-${Math.random().toString(36).substring(2, 7)}`,
+                    pageIndex: pIdx,
+                    x: Math.round(x),
+                    y: Math.round(y),
+                    width: Math.round(widthVal),
+                    height: Math.round(heightVal),
+                    color: colorHex,
+                    opacity,
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Could not extract native highlight annotations:", err);
+    }
+    return result;
+  };
+
+  const extractTextBoxesFromPdf = (pdfDoc: PDFDocument, parsedPages: PdfPage[]): TextBoxItem[] => {
+    const result: TextBoxItem[] = [];
+    try {
+      const docPages = pdfDoc.getPages();
+      for (let pIdx = 0; pIdx < docPages.length; pIdx++) {
+        const page = docPages[pIdx];
+        const parsedPage = parsedPages[pIdx];
+        if (!parsedPage) continue;
+        const { width, height } = page.getSize();
+        let boxX = 0;
+        let boxY = 0;
+        let visibleWidth = width;
+        let visibleHeight = height;
+        try {
+          const cropBox = page.getCropBox();
+          if (cropBox) {
+            boxX = cropBox.x || 0;
+            boxY = cropBox.y || 0;
+            visibleWidth = cropBox.width;
+            visibleHeight = cropBox.height;
+          }
+        } catch (e) {
+          // ignore
+        }
+
+        let angle = 0;
+        try {
+          const rot = page.getRotation();
+          if (rot && typeof rot.angle === 'number') {
+            angle = rot.angle;
+          } else if (typeof rot === 'number') {
+            angle = rot;
+          }
+        } catch (e) {}
+        angle = (angle % 360 + 360) % 360;
+
+        const annots = page.node.lookup(pdfLib.PDFName.of('Annots'));
+        if (annots && typeof (annots as any).size === 'function') {
+          const annotCount = (annots as any).size();
+          for (let aIdx = 0; aIdx < annotCount; aIdx++) {
+            const annot = (annots as any).lookup(aIdx);
+            if (!annot) continue;
+            const subtype = annot.lookup(pdfLib.PDFName.of('Subtype'))?.toString();
+            if (subtype === '/FreeText') {
+              // 1. Check if CustomMeta has full state
+              const customMeta = annot.lookup(pdfLib.PDFName.of('CustomMeta'));
+              if (customMeta && typeof (customMeta as any).decodeText === 'function') {
+                try {
+                  const metaParsed = JSON.parse((customMeta as any).decodeText());
+                  if (metaParsed && metaParsed.text !== undefined) {
+                    result.push({
+                      ...metaParsed,
+                      pageIndex: pIdx,
+                      id: metaParsed.id || `tb-pdf-${pIdx}-${aIdx}-${Math.random().toString(36).substring(2, 7)}`,
+                    });
+                    continue;
+                  }
+                } catch (e) {
+                  // fallback to manual extraction
+                }
+              }
+
+              // 2. Fallback: manual extraction from PDF standard FreeText annotation
+              const rectObj = annot.lookup(pdfLib.PDFName.of('Rect'));
+              if (rectObj && typeof (rectObj as any).asArray === 'function') {
+                const coords = (rectObj as any).asArray().map((v: any) => typeof v.asNumber === 'function' ? v.asNumber() : Number(v));
+                if (coords.length >= 4) {
+                  const rectX = Math.min(coords[0], coords[2]);
+                  const rectY = Math.min(coords[1], coords[3]);
+                  const rectW = Math.abs(coords[2] - coords[0]);
+                  const rectH = Math.abs(coords[3] - coords[1]);
+
+                  const canvasWidth = parsedPage.width;
+                  const canvasHeight = parsedPage.height;
+
+                  let x = 0;
+                  let y = 0;
+                  let widthVal = 0;
+                  let heightVal = 0;
+
+                  if (angle === 90) {
+                    const scaleX = visibleHeight / canvasWidth;
+                    const scaleY = visibleWidth / canvasHeight;
+                    widthVal = rectH / scaleX;
+                    heightVal = rectW / scaleY;
+                    y = (rectX - boxX) / scaleY;
+                    x = (rectY - boxY) / scaleX;
+                  } else if (angle === 180) {
+                    const scaleX = visibleWidth / canvasWidth;
+                    const scaleY = visibleHeight / canvasHeight;
+                    widthVal = rectW / scaleX;
+                    heightVal = rectH / scaleY;
+                    y = (rectY - boxY) / scaleY;
+                    x = (visibleWidth - (rectX - boxX)) / scaleX - widthVal;
+                  } else if (angle === 270) {
+                    const scaleX = visibleHeight / canvasWidth;
+                    const scaleY = visibleWidth / canvasHeight;
+                    widthVal = rectH / scaleX;
+                    heightVal = rectW / scaleY;
+                    y = (visibleWidth - (rectX - boxX)) / scaleY - heightVal;
+                    x = (visibleHeight - (rectY - boxY)) / scaleX - widthVal;
+                  } else {
+                    const scaleX = visibleWidth / canvasWidth;
+                    const scaleY = visibleHeight / canvasHeight;
+                    widthVal = rectW / scaleX;
+                    heightVal = rectH / scaleY;
+                    x = (rectX - boxX) / scaleX;
+                    y = (visibleHeight - (rectY - boxY + rectH)) / scaleY;
+                  }
+
+                  let textContent = '';
+                  const contentsObj = annot.lookup(pdfLib.PDFName.of('Contents'));
+                  if (contentsObj) {
+                    if (typeof (contentsObj as any).decodeText === 'function') {
+                      textContent = (contentsObj as any).decodeText();
+                    } else if (typeof (contentsObj as any).asString === 'function') {
+                      textContent = (contentsObj as any).asString();
+                    }
+                  }
+
+                  let colorHex = '#000000';
+                  let fontSize = 14;
+                  let fontFamily = 'Times New Roman';
+                  const daObj = annot.lookup(pdfLib.PDFName.of('DA'));
+                  if (daObj) {
+                    const daStr = typeof (daObj as any).asString === 'function' ? (daObj as any).asString() : daObj.toString();
+                    if (daStr.toLowerCase().includes('times')) fontFamily = 'Times New Roman';
+                    else if (daStr.toLowerCase().includes('arial') || daStr.toLowerCase().includes('helv')) fontFamily = 'Arial';
+                    
+                    const sizeMatch = daStr.match(/(\d+(?:\.\d+)?)\s+Tf/);
+                    if (sizeMatch && sizeMatch[1]) {
+                      fontSize = Math.round(parseFloat(sizeMatch[1]));
+                    }
+                  }
+
+                  result.push({
+                    id: `tb-pdf-${pIdx}-${aIdx}-${Math.random().toString(36).substring(2, 7)}`,
+                    pageIndex: pIdx,
+                    x: Math.round(x),
+                    y: Math.round(y),
+                    width: Math.max(80, Math.round(widthVal)),
+                    height: Math.max(30, Math.round(heightVal)),
+                    text: textContent || '',
+                    fontFamily,
+                    fontSize,
+                    isBold: false,
+                    isItalic: false,
+                    color: colorHex,
+                    textAlign: 'left',
+                    hasBackground: false,
+                    hasBorder: false,
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Could not extract native text box annotations:", err);
+    }
+    return result;
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1263,6 +1606,9 @@ export default function App() {
     setDocumentName(file.name);
     setHighlights([]);
     setSelectedHighlightId(null);
+    setTextBoxes([]);
+    setSelectedTextBoxId(null);
+    setEditingTextBoxId(null);
     try {
       const arrayBuffer = await file.arrayBuffer();
       const uint8Array = new Uint8Array(arrayBuffer);
@@ -1273,15 +1619,39 @@ export default function App() {
       
       const parsedPages = await renderPdfPages(uint8Array);
 
-      // Restore saved highlights from embedded PDF metadata or localStorage
+      // Restore saved highlights from embedded PDF metadata, native PDF Annotations, or localStorage
       let loadedHighlights: HighlightItem[] = [];
       try {
         const loadedPdfDoc = await PDFDocument.load(uint8Array, { ignoreEncryption: true });
         const subject = loadedPdfDoc.getSubject();
-        if (subject && subject.includes('highlights')) {
-          const parsedMeta = JSON.parse(subject);
-          if (Array.isArray(parsedMeta.highlights) && parsedMeta.highlights.length > 0) {
-            loadedHighlights = parsedMeta.highlights;
+        if (subject) {
+          try {
+            const parsedMeta = JSON.parse(subject);
+            if (Array.isArray(parsedMeta.highlights) && parsedMeta.highlights.length > 0) {
+              loadedHighlights = parsedMeta.highlights;
+            }
+          } catch (e) {
+            // ignore
+          }
+        }
+
+        // Also extract any native /Highlight annotations from the PDF
+        const nativeHighlights = extractHighlightsFromPdf(loadedPdfDoc, parsedPages);
+        if (nativeHighlights.length > 0) {
+          if (loadedHighlights.length === 0) {
+            loadedHighlights = nativeHighlights;
+          } else {
+            // Merge any native annotations that are not already in loadedHighlights
+            for (const nh of nativeHighlights) {
+              const alreadyExists = loadedHighlights.some(lh => 
+                lh.pageIndex === nh.pageIndex &&
+                Math.abs(lh.x - nh.x) < 8 &&
+                Math.abs(lh.y - nh.y) < 8
+              );
+              if (!alreadyExists) {
+                loadedHighlights.push(nh);
+              }
+            }
           }
         }
       } catch (e) {
@@ -1305,6 +1675,11 @@ export default function App() {
       if (loadedHighlights.length > 0) {
         setHighlights(loadedHighlights);
       }
+
+      // Do not re-inject text boxes when opening a file because text is already written directly into the PDF
+      setTextBoxes([]);
+      initialLoadedTextBoxesRef.current = [];
+      setDeletedTextBoxes([]);
 
       try {
         const loadedFields = await extractFieldsFromPdf(uint8Array, parsedPages);
@@ -1742,16 +2117,20 @@ export default function App() {
     if (activeTool === 'Select') {
       setSelectedFieldId(null);
       setSelectedHighlightId(null);
+      setSelectedTextBoxId(null);
+      setEditingTextBoxId(null);
       return;
     }
-    if (activeTool !== 'Signature Field' && activeTool !== 'Text Field' && activeTool !== 'Highlight') return;
-    if (isDigitallySigned && (activeTool === 'Signature Field' || activeTool === 'Text Field')) {
-      alert("Tài liệu này đã được ký số. Không thể thêm trường chữ ký hoặc trường văn bản mới.");
+    if (activeTool !== 'Signature Field' && activeTool !== 'Highlight' && activeTool !== 'Text Box') return;
+    if (isDigitallySigned && activeTool === 'Signature Field') {
+      alert("Tài liệu này đã được ký số. Không thể thêm trường chữ ký mới.");
       return;
     }
     
     setSelectedFieldId(null);
     setSelectedHighlightId(null);
+    setSelectedTextBoxId(null);
+    setEditingTextBoxId(null);
     const pageElement = e.currentTarget as HTMLDivElement;
     const rect = pageElement.getBoundingClientRect();
     if (!rect) return;
@@ -1782,6 +2161,28 @@ export default function App() {
       }
   };
 
+  const handleTextBoxResizeDown = (e: React.MouseEvent, tb: TextBoxItem, type: 'drag' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw') => {
+    e.stopPropagation();
+    const pageElement = (e.currentTarget as HTMLElement).closest('[id^="page-"]') as HTMLDivElement;
+    if (pageElement) {
+      const rect = pageElement.getBoundingClientRect();
+      const startX = (e.clientX - rect.left) / zoom;
+      const startY = (e.clientY - rect.top) / zoom;
+      setTextBoxInteraction({
+        id: tb.id,
+        type,
+        startX,
+        startY,
+        originalX: tb.x,
+        originalY: tb.y,
+        originalWidth: tb.width,
+        originalHeight: tb.height,
+        pageIndex: tb.pageIndex
+      });
+      setSelectedTextBoxId(tb.id);
+    }
+  };
+
   const handleMouseUp = () => {
     if (fieldInteraction) {
       setFieldInteraction(null);
@@ -1791,8 +2192,48 @@ export default function App() {
       setHighlightInteraction(null);
       return;
     }
+    if (textBoxInteraction) {
+      setTextBoxInteraction(null);
+      return;
+    }
     
     if (!drawing) return;
+
+    if (activeTool === 'Text Box') {
+      let width = Math.abs(drawing.currentX - drawing.startX);
+      let height = Math.abs(drawing.currentY - drawing.startY);
+      let x = Math.min(drawing.startX, drawing.currentX);
+      let y = Math.min(drawing.startY, drawing.currentY);
+
+      if (width < 10 || height < 10) {
+        width = 180;
+        height = 50;
+      }
+
+      const newId = `tb-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+      setTextBoxes(prev => [...prev, {
+        id: newId,
+        pageIndex: drawing.pageIndex,
+        x,
+        y,
+        width,
+        height,
+        text: 'Nhập nội dung chữ...',
+        fontFamily: tbFontFamily,
+        fontSize: tbFontSize,
+        isBold: tbIsBold,
+        isItalic: tbIsItalic,
+        color: tbColor,
+        textAlign: tbTextAlign,
+        hasBackground: tbHasBackground,
+        hasBorder: tbHasBorder,
+      }]);
+      setSelectedTextBoxId(newId);
+      setEditingTextBoxId(newId);
+      setDrawing(null);
+      ensureFontsLoaded();
+      return;
+    }
 
     if (activeTool === 'Highlight') {
       let width = Math.abs(drawing.currentX - drawing.startX);
@@ -1820,6 +2261,7 @@ export default function App() {
 
       if (width > 3 && height > 3) {
         const newId = `hl-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+        const isEraser = highlightToolMode === 'eraser';
         setHighlights(prev => [...prev, {
           id: newId,
           pageIndex: drawing.pageIndex,
@@ -1827,8 +2269,9 @@ export default function App() {
           y,
           width,
           height,
-          color: highlightColor,
-          opacity: highlightOpacity,
+          color: isEraser ? '#ffffff' : highlightColor,
+          opacity: isEraser ? 1 : highlightOpacity,
+          isWhiteout: isEraser,
         }]);
         setSelectedHighlightId(newId);
       }
@@ -1842,8 +2285,8 @@ export default function App() {
     let y = Math.min(drawing.startY, drawing.currentY);
     
     if (width < 5 || height < 5) {
-      width = activeTool === 'Text Field' ? 150 : 120;
-      height = activeTool === 'Text Field' ? 30 : 50;
+      width = 120;
+      height = 50;
     }
     
     if (width > 5 && height > 5) {
@@ -1857,19 +2300,6 @@ export default function App() {
           type: 'signature',
           name: defaultName,
           originalName: defaultName,
-        }]);
-        setSelectedFieldId(newId);
-      } else if (activeTool === 'Text Field') {
-        const defaultName = `TextField${fields.filter(f => f.type === 'text').length + 1}`;
-        setFields([...fields, {
-          id: newId,
-          pageIndex: drawing.pageIndex,
-          x, y, width, height,
-          type: 'text',
-          name: defaultName,
-          originalName: defaultName,
-          textValue: '',
-          fontSize: 12,
         }]);
         setSelectedFieldId(newId);
       }
@@ -1891,20 +2321,20 @@ export default function App() {
     setIsProcessing(true);
     try {
       // Ensure all custom fonts are loaded before we proceed to embed them
-      await ensureFontsLoaded();
+      const loadedFonts = await ensureFontsLoaded();
       const pdfDoc = await PDFDocument.load(originalPdfBuffer);
       
       // Register fontkit to support custom TrueType fonts for Vietnamese Unicode
       pdfDoc.registerFontkit(fontkit);
       
       // Fallback strategy: create safe, guaranteed TrueType font buffers supporting Vietnamese Unicode
-      const safeSerifRegular = fontSerifRegular || vietnameseFontBytes || fontSansRegular;
-      const safeSerifBold = fontSerifBold || safeSerifRegular;
-      const safeSerifItalic = fontSerifItalic || safeSerifRegular;
+      const safeSerifRegular = loadedFonts?.serifRegular || fontsRef.current.serifRegular || fontSerifRegular || vietnameseFontBytes || fontSansRegular;
+      const safeSerifBold = loadedFonts?.serifBold || fontsRef.current.serifBold || fontSerifBold || safeSerifRegular;
+      const safeSerifItalic = loadedFonts?.serifItalic || fontsRef.current.serifItalic || fontSerifItalic || safeSerifRegular;
 
-      const safeSansRegular = fontSansRegular || vietnameseFontBytes || fontSerifRegular;
-      const safeSansBold = fontSansBold || safeSansRegular;
-      const safeSansItalic = fontSansItalic || safeSansRegular;
+      const safeSansRegular = loadedFonts?.sansRegular || fontsRef.current.sansRegular || fontSansRegular || vietnameseFontBytes || fontSerifRegular;
+      const safeSansBold = loadedFonts?.sansBold || fontsRef.current.sansBold || fontSansBold || safeSansRegular;
+      const safeSansItalic = loadedFonts?.sansItalic || fontsRef.current.sansItalic || fontSansItalic || safeSansRegular;
 
       // Embed all custom fonts for high-quality Vietnamese text
       const embeddedSerifRegular = safeSerifRegular ? await pdfDoc.embedFont(safeSerifRegular) : await pdfDoc.embedFont(pdfLib.StandardFonts.TimesRoman);
@@ -2165,6 +2595,21 @@ export default function App() {
         const scaleX = visibleWidth / parsedPage.width;
         const scaleY = visibleHeight / parsedPage.height;
 
+        // Clean out any previous /Highlight annotations on this page so deleted ones are permanently removed
+        const annots = page.node.lookup(pdfLib.PDFName.of('Annots'));
+        if (annots && typeof (annots as any).size === 'function') {
+          const remaining: any[] = [];
+          for (let aIdx = 0; aIdx < (annots as any).size(); aIdx++) {
+            const annotRef = (annots as any).get(aIdx);
+            const annot = (annots as any).lookup(aIdx);
+            const subtype = annot?.lookup(pdfLib.PDFName.of('Subtype'))?.toString();
+            if (subtype !== '/Highlight') {
+              remaining.push(annotRef);
+            }
+          }
+          page.node.set(pdfLib.PDFName.of('Annots'), pdfDoc.context.obj(remaining));
+        }
+
         const pageHighlights = highlights.filter(h => h.pageIndex === pIdx);
         for (const h of pageHighlights) {
           const pdfHlX = boxX + (h.x * scaleX);
@@ -2172,22 +2617,340 @@ export default function App() {
           const pdfHlW = h.width * scaleX;
           const pdfHlH = h.height * scaleY;
 
+          if (h.isWhiteout) {
+            // Whiteout covers the old baked yellow stain with white
+            page.drawRectangle({
+              x: pdfHlX,
+              y: pdfHlY,
+              width: pdfHlW,
+              height: pdfHlH,
+              color: pdfLib.rgb(1, 1, 1),
+            });
+
+            // Redraw crisp text inside this whiteout box so text remains visible and sharp
+            const overlappingTexts = pdfTexts.filter(t => 
+              t.pageIndex === pIdx && !t.isModified &&
+              t.x + t.width >= h.x - 2 && t.x <= h.x + h.width + 2 &&
+              t.y + t.height >= h.y - 2 && t.y <= h.y + h.height + 2
+            );
+
+            for (const t of overlappingTexts) {
+              const fontNameLower = (t.customFontFamily || t.fontName || '').toLowerCase();
+              const isSans = fontNameLower.includes('sans') || fontNameLower.includes('arial') || fontNameLower.includes('roboto') || fontNameLower.includes('helvetica') || fontNameLower.includes('calibri');
+              let fontToUse;
+              if (isSans) {
+                if (t.isBold) fontToUse = embeddedSansBold;
+                else if (t.isItalic) fontToUse = embeddedSansItalic;
+                else fontToUse = embeddedSansRegular;
+              } else {
+                if (t.isBold) fontToUse = embeddedSerifBold;
+                else if (t.isItalic) fontToUse = embeddedSerifItalic;
+                else fontToUse = embeddedSerifRegular;
+              }
+
+              const fontSizeToUse = t.customFontSize || t.pdfHeight;
+              const finalPdfX = t.pdfX || (boxX + t.x * scaleX);
+              const finalPdfY = t.pdfY || (boxY + (visibleHeight - (t.y + t.height) * scaleY));
+
+              try {
+                page.drawText(t.text, {
+                  x: finalPdfX,
+                  y: finalPdfY,
+                  size: fontSizeToUse,
+                  font: fontToUse,
+                  color: hexToRgb(t.customColor || '#000000'),
+                  rotate: pdfLib.degrees(t.rotation || 0),
+                });
+              } catch (drawErr) {
+                // ignore
+              }
+            }
+          } else {
+            // Standard PDF Highlight Annotation (non-destructive, interactive in Foxit/Adobe/etc.)
+            const rgb = hexToRgb(h.color || '#fde047');
+            const annotDict = pdfDoc.context.obj({
+              Type: 'Annot',
+              Subtype: 'Highlight',
+              Rect: [pdfHlX, pdfHlY, pdfHlX + pdfHlW, pdfHlY + pdfHlH],
+              C: [rgb.red, rgb.green, rgb.blue],
+              CA: h.opacity || 0.45,
+              QuadPoints: [
+                pdfHlX, pdfHlY + pdfHlH,
+                pdfHlX + pdfHlW, pdfHlY + pdfHlH,
+                pdfHlX, pdfHlY,
+                pdfHlX + pdfHlW, pdfHlY
+              ],
+              F: 4,
+            });
+            const annotRef = pdfDoc.context.register(annotDict);
+            let currentAnnots = page.node.lookup(pdfLib.PDFName.of('Annots'));
+            if (!currentAnnots || typeof (currentAnnots as any).push !== 'function') {
+              const newAnnots = pdfDoc.context.obj([]);
+              page.node.set(pdfLib.PDFName.of('Annots'), newAnnots);
+              currentAnnots = newAnnots;
+            }
+            (currentAnnots as any).push(annotRef);
+          }
+        }
+      }
+
+      // Clean out any previous /FreeText annotations on each page
+      for (let pIdx = 0; pIdx < pdfPages.length; pIdx++) {
+        const page = pdfPages[pIdx];
+        const annots = page.node.lookup(pdfLib.PDFName.of('Annots'));
+        if (annots && typeof (annots as any).size === 'function') {
+          const remaining: any[] = [];
+          for (let aIdx = 0; aIdx < (annots as any).size(); aIdx++) {
+            const annotRef = (annots as any).get(aIdx);
+            const annot = (annots as any).lookup(aIdx);
+            const subtype = annot?.lookup(pdfLib.PDFName.of('Subtype'))?.toString();
+            if (subtype !== '/FreeText') {
+              remaining.push(annotRef);
+            }
+          }
+          page.node.set(pdfLib.PDFName.of('Annots'), pdfDoc.context.obj(remaining));
+        }
+      }
+
+      // 1. Erase any text boxes that were originally present in the imported PDF but were deleted
+      for (const dtb of deletedTextBoxes) {
+        if (dtb.pageIndex < pdfPages.length) {
+          const page = pdfPages[dtb.pageIndex];
+          const parsedPage = pages[dtb.pageIndex];
+          if (!parsedPage) continue;
+          const { width, height } = page.getSize();
+          let boxX = 0;
+          let boxY = 0;
+          let visibleWidth = width;
+          let visibleHeight = height;
+          try {
+            const cropBox = page.getCropBox();
+            if (cropBox) {
+              boxX = cropBox.x || 0;
+              boxY = cropBox.y || 0;
+              visibleWidth = cropBox.width;
+              visibleHeight = cropBox.height;
+            }
+          } catch (e) {}
+
+          const scaleX = visibleWidth / parsedPage.width;
+          const scaleY = visibleHeight / parsedPage.height;
+          const pdfX = boxX + (dtb.x * scaleX);
+          const pdfY = boxY + (visibleHeight - (dtb.y + dtb.height) * scaleY);
+          const pdfW = dtb.width * scaleX;
+          const pdfH = dtb.height * scaleY;
+
           page.drawRectangle({
-            x: pdfHlX,
-            y: pdfHlY,
-            width: pdfHlW,
-            height: pdfHlH,
-            color: hexToRgb(h.color),
-            opacity: h.opacity || 0.45,
+            x: pdfX - 1,
+            y: pdfY - 1,
+            width: pdfW + 2,
+            height: pdfH + 2,
+            color: pdfLib.rgb(1, 1, 1),
           });
+        }
+      }
+
+      // 2. Export active text boxes directly to the PDF page with TrueType embedded fonts
+      for (let pIdx = 0; pIdx < pdfPages.length; pIdx++) {
+        const page = pdfPages[pIdx];
+        const { width, height } = page.getSize();
+        
+        let boxX = 0;
+        let boxY = 0;
+        let visibleWidth = width;
+        let visibleHeight = height;
+        try {
+          const cropBox = page.getCropBox();
+          if (cropBox) {
+            boxX = cropBox.x || 0;
+            boxY = cropBox.y || 0;
+            visibleWidth = cropBox.width;
+            visibleHeight = cropBox.height;
+          }
+        } catch (e) {}
+
+        let angle = 0;
+        try {
+          const rot = page.getRotation();
+          if (rot && typeof rot.angle === 'number') {
+            angle = rot.angle;
+          } else if (typeof rot === 'number') {
+            angle = rot;
+          }
+        } catch (e) {}
+        angle = (angle % 360 + 360) % 360;
+
+        const parsedPage = pages[pIdx];
+        if (!parsedPage) continue;
+        const canvasWidth = parsedPage.width;
+        const canvasHeight = parsedPage.height;
+
+        const pageTextBoxes = textBoxes.filter(tb => tb.pageIndex === pIdx);
+        for (const tb of pageTextBoxes) {
+          let pdfTbX = 0;
+          let pdfTbY = 0;
+          let pdfTbW = 0;
+          let pdfTbH = 0;
+
+          if (angle === 90) {
+            const scaleX = visibleHeight / canvasWidth;
+            const scaleY = visibleWidth / canvasHeight;
+            pdfTbX = boxX + (tb.y * scaleY);
+            pdfTbY = boxY + (tb.x * scaleX);
+            pdfTbW = tb.height * scaleY;
+            pdfTbH = tb.width * scaleX;
+          } else if (angle === 180) {
+            const scaleX = visibleWidth / canvasWidth;
+            const scaleY = visibleHeight / canvasHeight;
+            pdfTbX = boxX + (visibleWidth - (tb.x + tb.width) * scaleX);
+            pdfTbY = boxY + (tb.y * scaleY);
+            pdfTbW = tb.width * scaleX;
+            pdfTbH = tb.height * scaleY;
+          } else if (angle === 270) {
+            const scaleX = visibleHeight / canvasWidth;
+            const scaleY = visibleWidth / canvasHeight;
+            pdfTbX = boxX + (visibleWidth - (tb.y + tb.height) * scaleY);
+            pdfTbY = boxY + (visibleHeight - (tb.x + tb.width) * scaleX);
+            pdfTbW = tb.height * scaleX;
+            pdfTbH = tb.width * scaleX;
+          } else {
+            const scaleX = visibleWidth / canvasWidth;
+            const scaleY = visibleHeight / canvasHeight;
+            pdfTbX = boxX + (tb.x * scaleX);
+            pdfTbY = boxY + (visibleHeight - (tb.y + tb.height) * scaleY);
+            pdfTbW = tb.width * scaleX;
+            pdfTbH = tb.height * scaleY;
+          }
+
+          // If the box was originally loaded from PDF and moved, erase its old position
+          const initialTb = initialLoadedTextBoxesRef.current.find(itb => itb.id === tb.id);
+          if (initialTb && (Math.abs(initialTb.x - tb.x) > 2 || Math.abs(initialTb.y - tb.y) > 2)) {
+            const scaleX = visibleWidth / canvasWidth;
+            const scaleY = visibleHeight / canvasHeight;
+            const oldPdfX = boxX + (initialTb.x * scaleX);
+            const oldPdfY = boxY + (visibleHeight - (initialTb.y + initialTb.height) * scaleY);
+            const oldPdfW = initialTb.width * scaleX;
+            const oldPdfH = initialTb.height * scaleY;
+            page.drawRectangle({
+              x: oldPdfX - 1,
+              y: oldPdfY - 1,
+              width: oldPdfW + 2,
+              height: oldPdfH + 2,
+              color: pdfLib.rgb(1, 1, 1),
+            });
+          }
+
+          const textColor = hexToRgb(tb.color || '#000000');
+          const fontSizeToUse = (tb.fontSize || 12);
+          const lineHeight = fontSizeToUse * 1.25;
+
+          // Select matching font
+          const fontNameLower = (tb.fontFamily || '').toLowerCase();
+          const isSans = fontNameLower.includes('sans') || fontNameLower.includes('arial') || fontNameLower.includes('roboto') || fontNameLower.includes('helvetica') || fontNameLower.includes('calibri');
+          let fontToUse;
+          if (isSans) {
+            if (tb.isBold) fontToUse = embeddedSansBold;
+            else if (tb.isItalic) fontToUse = embeddedSansItalic;
+            else fontToUse = embeddedSansRegular;
+          } else {
+            if (tb.isBold) fontToUse = embeddedSerifBold;
+            else if (tb.isItalic) fontToUse = embeddedSerifItalic;
+            else fontToUse = embeddedSerifRegular;
+          }
+
+          // 1. Draw white background if requested (to cover old text or highlight box)
+          if (tb.hasBackground) {
+            page.drawRectangle({
+              x: pdfTbX,
+              y: pdfTbY,
+              width: pdfTbW,
+              height: pdfTbH,
+              color: pdfLib.rgb(1, 1, 1),
+              borderWidth: tb.hasBorder ? 1 : 0,
+              borderColor: tb.hasBorder ? textColor : undefined,
+            });
+          } else if (tb.hasBorder) {
+            page.drawRectangle({
+              x: pdfTbX,
+              y: pdfTbY,
+              width: pdfTbW,
+              height: pdfTbH,
+              borderWidth: 1,
+              borderColor: textColor,
+            });
+          }
+
+          // 2. Draw text lines directly on page
+          if (tb.text && tb.text.trim()) {
+            const rawLines = tb.text.split('\n');
+            const finalLines: string[] = [];
+            const maxLineWidth = Math.max(10, pdfTbW - 8);
+
+            for (const rLine of rawLines) {
+              if (!rLine) {
+                finalLines.push('');
+                continue;
+              }
+              const words = rLine.split(' ');
+              let curLine = '';
+              for (const word of words) {
+                const test = curLine ? `${curLine} ${word}` : word;
+                let testW = test.length * (fontSizeToUse * 0.52);
+                try {
+                  testW = fontToUse.widthOfTextAtSize(test, fontSizeToUse);
+                } catch (e) {}
+                if (testW > maxLineWidth && curLine) {
+                  finalLines.push(curLine);
+                  curLine = word;
+                } else {
+                  curLine = test;
+                }
+              }
+              if (curLine) {
+                finalLines.push(curLine);
+              }
+            }
+
+            let curY = pdfTbY + pdfTbH - fontSizeToUse - 4;
+            for (const line of finalLines) {
+              if (curY < pdfTbY - fontSizeToUse) break;
+              if (line) {
+                let curX = pdfTbX + 4;
+                if (tb.textAlign === 'center' || tb.textAlign === 'right') {
+                  let lineW = line.length * (fontSizeToUse * 0.52);
+                  try {
+                    lineW = fontToUse.widthOfTextAtSize(line, fontSizeToUse);
+                  } catch (e) {}
+                  if (tb.textAlign === 'center') {
+                    curX = pdfTbX + (pdfTbW - lineW) / 2;
+                  } else if (tb.textAlign === 'right') {
+                    curX = pdfTbX + pdfTbW - lineW - 4;
+                  }
+                }
+
+                try {
+                  page.drawText(line, {
+                    x: Math.max(0, curX),
+                    y: Math.max(0, curY),
+                    size: fontSizeToUse,
+                    font: fontToUse,
+                    color: textColor,
+                  });
+                } catch (e) {
+                  console.warn('Error drawing text line in PDF:', e);
+                }
+              }
+              curY -= lineHeight;
+            }
+          }
         }
       }
 
       // Embed highlights metadata into PDF so they can be reopened and deleted later
       try {
-        pdfDoc.setSubject(JSON.stringify({ v: 1, highlights }));
+        pdfDoc.setSubject(JSON.stringify({ v: 2, highlights }));
       } catch (metaErr) {
-        console.warn("Could not embed highlights metadata:", metaErr);
+        console.warn("Could not embed metadata:", metaErr);
       }
       
       const pdfBytes = await pdfDoc.save();
@@ -2206,6 +2969,9 @@ export default function App() {
         localStorage.setItem(`pdf_highlights_${downloadName}`, JSON.stringify(highlights));
         localStorage.setItem(`pdf_highlights_${rawName}`, JSON.stringify(highlights));
         localStorage.setItem(`pdf_highlights_${documentName}`, JSON.stringify(highlights));
+        localStorage.removeItem(`pdf_textboxes_${downloadName}`);
+        localStorage.removeItem(`pdf_textboxes_${rawName}`);
+        localStorage.removeItem(`pdf_textboxes_${documentName}`);
       } catch (e) {
         // ignore
       }
@@ -2309,12 +3075,72 @@ export default function App() {
             } else if (highlightInteraction.type === 'e') {
               newW += dx;
               if (newW < 10) newW = 10;
+            } else if (highlightInteraction.type === 's') {
+              newH += dy;
+              if (newH < 10) newH = 10;
+            } else if (highlightInteraction.type === 'se') {
+              newW += dx;
+              newH += dy;
+              if (newW < 10) newW = 10;
+              if (newH < 10) newH = 10;
             }
             
             newX = Math.max(0, Math.min(pageWidth - newW, newX));
             newY = Math.max(0, Math.min(pageHeight - newH, newY));
             
             return { ...h, x: newX, y: newY, width: newW, height: newH };
+          }));
+        } else if (textBoxInteraction) {
+          const pageElement = document.getElementById(`page-${textBoxInteraction.pageIndex}`);
+          if (!pageElement) return;
+          const rect = pageElement.getBoundingClientRect();
+          let x = (e.clientX - rect.left) / zoom;
+          let y = (e.clientY - rect.top) / zoom;
+          
+          const dx = x - textBoxInteraction.startX;
+          const dy = y - textBoxInteraction.startY;
+
+          const targetPage = pages[textBoxInteraction.pageIndex];
+          const pageWidth = targetPage ? targetPage.width : 800;
+          const pageHeight = targetPage ? targetPage.height : 1131;
+          
+          setTextBoxes(prev => prev.map(tb => {
+            if (tb.id !== textBoxInteraction.id) return tb;
+            
+            let newX = textBoxInteraction.originalX;
+            let newY = textBoxInteraction.originalY;
+            let newW = textBoxInteraction.originalWidth;
+            let newH = textBoxInteraction.originalHeight;
+            
+            if (textBoxInteraction.type === 'drag') {
+              newX += dx;
+              newY += dy;
+            } else {
+              if (textBoxInteraction.type.includes('e')) newW += dx;
+              if (textBoxInteraction.type.includes('s')) newH += dy;
+              if (textBoxInteraction.type.includes('w')) {
+                newX += dx;
+                newW -= dx;
+              }
+              if (textBoxInteraction.type.includes('n')) {
+                newY += dy;
+                newH -= dy;
+              }
+              
+              if (newW < 30) {
+                if (textBoxInteraction.type.includes('w')) newX -= (30 - newW);
+                newW = 30;
+              }
+              if (newH < 20) {
+                if (textBoxInteraction.type.includes('n')) newY -= (20 - newH);
+                newH = 20;
+              }
+            }
+            
+            newX = Math.max(0, Math.min(pageWidth - newW, newX));
+            newY = Math.max(0, Math.min(pageHeight - newH, newY));
+            
+            return { ...tb, x: newX, y: newY, width: newW, height: newH };
           }));
         } else if (drawing) {
           const pageElement = document.getElementById(`page-${drawing.pageIndex}`);
@@ -2530,7 +3356,7 @@ export default function App() {
                              </div>
                           </li>
                           <li className="flex items-start gap-2">
-                             <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">4</div>
+                             <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">3</div>
                              <div>
                                 <strong className="text-gray-800">Xóa các trang thừa:</strong> Di chuột vào trang bất kỳ ở cột bên trái hoặc trang chính và nhấp vào nút biểu tượng <span className="inline-flex items-center gap-0.5 bg-red-50 text-red-700 border border-red-200 px-1 py-0.5 rounded text-xs"><Trash2 className="w-3 h-3 text-red-600" /> Xóa</span> để lược bỏ trang mong muốn.
                              </div>
@@ -2556,13 +3382,7 @@ export default function App() {
                           <li className="flex items-start gap-2">
                              <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">2</div>
                              <div>
-                                <strong className="text-gray-800">Tạo trường văn bản:</strong> Chọn công cụ <span className="inline-flex items-center gap-0.5 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-300 font-medium text-xs text-gray-700"><Type className="w-3.5 h-3.5 text-blue-600" /> Trường văn bản</span> để kéo vẽ các vùng nhập liệu văn bản tương tác trực tiếp.
-                             </div>
-                          </li>
-                          <li className="flex items-start gap-2">
-                             <div className="mt-0.5 w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0 text-indigo-600 text-xs font-bold">3</div>
-                             <div>
-                                <strong className="text-gray-800">Đặt tên định danh cho vùng ký/trường văn bản:</strong> Click đúp hoặc nhấn vào tên chữ trên vùng vừa vẽ để đổi tên trực tiếp, hoặc chọn vùng đó rồi đổi tên ở <span className="font-semibold text-gray-800">Bảng thuộc tính phía bên phải</span> (ví dụ: đặt tên là <i>"ChuKyGiamDoc"</i>, <i>"NguoiKy1"</i>). Tên này sẽ lưu trữ chuẩn cấu trúc AcroForm của tài liệu PDF.
+                                <strong className="text-gray-800">Đặt tên định danh cho vùng ký:</strong> Click đúp hoặc nhấn vào tên chữ trên vùng vừa vẽ để đổi tên trực tiếp, hoặc chọn vùng đó rồi đổi tên ở <span className="font-semibold text-gray-800">Bảng thuộc tính phía bên phải</span> (ví dụ: đặt tên là <i>"ChuKyGiamDoc"</i>, <i>"NguoiKy1"</i>). Tên này sẽ lưu trữ chuẩn cấu trúc AcroForm của tài liệu PDF.
                              </div>
                           </li>
                           <li className="flex items-start gap-2">
@@ -2771,9 +3591,15 @@ export default function App() {
            />
            <RibbonButton 
               icon={Type} 
-              label={"Trường\nvăn bản"} 
-              active={activeTool === 'Text Field'} 
-              onClick={() => setActiveTool('Text Field')}
+              label={"Thêm chữ\n(Text box)"} 
+              active={activeTool === 'Text Box'} 
+              onClick={() => {
+                setActiveTool('Text Box');
+                setSelectedFieldId(null);
+                setSelectedTextId(null);
+                setSelectedHighlightId(null);
+                ensureFontsLoaded();
+              }}
            />
            <RibbonButton 
               icon={Edit} 
@@ -3012,101 +3838,176 @@ export default function App() {
         })()}
 
         {activeTool === 'Highlight' && (() => {
+          const selectedH = highlights.find(h => h.id === selectedHighlightId);
+
           return (
             <>
               <div className="w-px h-16 bg-gray-300"></div>
 
-              {/* Highlight Toolbar Group */}
+              {/* Highlight & Eraser Toolbar Group */}
               <div className="flex items-center gap-3 bg-white/95 border border-amber-300 rounded-xl px-3 py-1 h-[68px] shadow-xs relative">
-                {/* Color Palette */}
+                {/* Mode Selector: Tô sáng vs Tẩy vết màu cũ */}
                 <div className="flex flex-col gap-1">
-                  <span className="text-[9px] font-bold text-amber-950 uppercase tracking-wider">Màu tô sáng</span>
-                  <div className="flex items-center gap-1.5">
-                    {HIGHLIGHT_COLORS.map(c => (
-                      <button
-                        key={c.color}
-                        type="button"
-                        onClick={() => {
-                          setHighlightColor(c.color);
-                          if (selectedHighlightId) {
-                            setHighlights(prev => prev.map(h => h.id === selectedHighlightId ? { ...h, color: c.color } : h));
-                          }
-                        }}
-                        className={`w-5 h-5 rounded-full border-2 transition-transform cursor-pointer ${
-                          (highlightColor || '').toLowerCase() === (c.color || '').toLowerCase() ? 'border-amber-600 scale-115 shadow-sm ring-2 ring-amber-300' : 'border-white hover:scale-105'
-                        }`}
-                        style={{ backgroundColor: c.color }}
-                        title={c.label}
-                      />
-                    ))}
-                    {/* Custom Color Input */}
-                    <label className="relative w-5 h-5 rounded-full border border-gray-300 overflow-hidden cursor-pointer flex items-center justify-center bg-gray-100 hover:opacity-90" title="Chọn màu tùy chỉnh">
-                      <input 
-                        type="color" 
-                        value={highlightColor} 
-                        onChange={(e) => {
-                          setHighlightColor(e.target.value);
-                          if (selectedHighlightId) {
-                            setHighlights(prev => prev.map(h => h.id === selectedHighlightId ? { ...h, color: e.target.value } : h));
-                          }
-                        }}
-                        className="opacity-0 absolute inset-0 cursor-pointer w-full h-full"
-                      />
-                    </label>
+                  <span className="text-[9px] font-bold text-amber-950 uppercase tracking-wider">Chế độ</span>
+                  <div className="flex items-center bg-amber-50/80 p-0.5 rounded-lg border border-amber-200">
+                    <button
+                      type="button"
+                      onClick={() => setHighlightToolMode('highlight')}
+                      className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold transition-all cursor-pointer ${
+                        highlightToolMode === 'highlight'
+                          ? 'bg-amber-500 text-white shadow-xs'
+                          : 'text-amber-900 hover:bg-amber-100/60'
+                      }`}
+                      title="Kéo chuột để tô sáng văn bản"
+                    >
+                      <Highlighter className="w-3.5 h-3.5" />
+                      <span>Tô sáng</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHighlightToolMode('eraser')}
+                      className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold transition-all cursor-pointer ${
+                        highlightToolMode === 'eraser'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-blue-900 hover:bg-blue-50'
+                      }`}
+                      title="Kéo chuột phủ lên vệt màu vàng đã in chết vào file để xóa sạch nền và giữ nguyên chữ đen"
+                    >
+                      <Eraser className="w-3.5 h-3.5" />
+                      <span>Tẩy vết màu cũ</span>
+                    </button>
                   </div>
                 </div>
 
                 <div className="h-9 w-px bg-amber-200/80"></div>
 
-                {/* Opacity Selection */}
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[9px] font-bold text-amber-950 uppercase tracking-wider">Độ đậm</span>
-                    <span className="text-[9px] font-semibold text-amber-800">{Math.round(highlightOpacity * 100)}%</span>
+                {highlightToolMode === 'highlight' ? (
+                  <>
+                    {/* Color Palette */}
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[9px] font-bold text-amber-950 uppercase tracking-wider">Màu tô sáng</span>
+                      <div className="flex items-center gap-1.5">
+                        {HIGHLIGHT_COLORS.map(c => (
+                          <button
+                            key={c.color}
+                            type="button"
+                            onClick={() => {
+                              setHighlightColor(c.color);
+                              if (selectedHighlightId) {
+                                setHighlights(prev => prev.map(h => h.id === selectedHighlightId ? { ...h, color: c.color, isWhiteout: false } : h));
+                              }
+                            }}
+                            className={`w-5 h-5 rounded-full border-2 transition-transform cursor-pointer ${
+                              (highlightColor || '').toLowerCase() === (c.color || '').toLowerCase() ? 'border-amber-600 scale-115 shadow-sm ring-2 ring-amber-300' : 'border-white hover:scale-105'
+                            }`}
+                            style={{ backgroundColor: c.color }}
+                            title={c.label}
+                          />
+                        ))}
+                        {/* Custom Color Input */}
+                        <label className="relative w-5 h-5 rounded-full border border-gray-300 overflow-hidden cursor-pointer flex items-center justify-center bg-gray-100 hover:opacity-90" title="Chọn màu tùy chỉnh">
+                          <input 
+                            type="color" 
+                            value={highlightColor} 
+                            onChange={(e) => {
+                              setHighlightColor(e.target.value);
+                              if (selectedHighlightId) {
+                                setHighlights(prev => prev.map(h => h.id === selectedHighlightId ? { ...h, color: e.target.value, isWhiteout: false } : h));
+                              }
+                            }}
+                            className="opacity-0 absolute inset-0 cursor-pointer w-full h-full"
+                          />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="h-9 w-px bg-amber-200/80"></div>
+
+                    {/* Opacity Selection */}
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[9px] font-bold text-amber-950 uppercase tracking-wider">Độ đậm</span>
+                        <span className="text-[9px] font-semibold text-amber-800">{Math.round(highlightOpacity * 100)}%</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {[0.3, 0.45, 0.65, 0.85].map(op => (
+                          <button
+                            key={op}
+                            type="button"
+                            onClick={() => {
+                              setHighlightOpacity(op);
+                              if (selectedHighlightId) {
+                                setHighlights(prev => prev.map(h => h.id === selectedHighlightId ? { ...h, opacity: op } : h));
+                              }
+                            }}
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-medium border transition-colors cursor-pointer ${
+                              Math.abs(highlightOpacity - op) < 0.05
+                                ? 'bg-amber-500 text-white border-amber-600 font-bold'
+                                : 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100'
+                            }`}
+                          >
+                            {Math.round(op * 100)}%
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  /* Eraser Info Box */
+                  <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg px-2.5 py-1.5 text-blue-900 text-[11px] max-w-[280px] leading-tight">
+                    <Eraser className="w-5 h-5 text-blue-600 shrink-0" />
+                    <span>Kéo chuột phủ lên vết màu vàng cũ đã in chết vào file để xóa sạch nền và giữ nguyên chữ nét!</span>
                   </div>
-                  <div className="flex items-center gap-1">
-                    {[0.3, 0.45, 0.65, 0.85].map(op => (
-                      <button
-                        key={op}
-                        type="button"
-                        onClick={() => {
-                          setHighlightOpacity(op);
-                          if (selectedHighlightId) {
-                            setHighlights(prev => prev.map(h => h.id === selectedHighlightId ? { ...h, opacity: op } : h));
-                          }
-                        }}
-                        className={`px-1.5 py-0.5 rounded text-[10px] font-medium border transition-colors cursor-pointer ${
-                          Math.abs(highlightOpacity - op) < 0.05
-                            ? 'bg-amber-500 text-white border-amber-600 font-bold'
-                            : 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100'
-                        }`}
-                      >
-                        {Math.round(op * 100)}%
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                )}
 
                 <div className="h-9 w-px bg-amber-200/80"></div>
 
                 {/* Actions & Delete */}
                 <div className="flex items-center gap-2">
                   {selectedHighlightId ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setHighlights(prev => prev.filter(h => h.id !== selectedHighlightId));
-                        setSelectedHighlightId(null);
-                      }}
-                      className="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
-                      title="Xóa vùng tô sáng đang chọn (Phím Delete)"
-                    >
-                      <Trash2 className="w-3.5 h-3.5 text-red-600" />
-                      <span>Xóa vùng tô</span>
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      {selectedH?.isWhiteout ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setHighlights(prev => prev.map(h => h.id === selectedHighlightId ? { ...h, isWhiteout: false, color: highlightColor, opacity: highlightOpacity } : h));
+                          }}
+                          className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded text-[10px] font-semibold flex items-center gap-1 cursor-pointer"
+                          title="Đổi thành khung tô sáng"
+                        >
+                          <Highlighter className="w-3 h-3 text-amber-600" />
+                          <span>Thành tô sáng</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setHighlights(prev => prev.map(h => h.id === selectedHighlightId ? { ...h, isWhiteout: true, color: '#ffffff', opacity: 1 } : h));
+                          }}
+                          className="px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-300 rounded text-[10px] font-semibold flex items-center gap-1 cursor-pointer"
+                          title="Đổi thành tẩy nền trắng để xóa vết màu cũ"
+                        >
+                          <Eraser className="w-3 h-3 text-blue-600" />
+                          <span>Tẩy nền</span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setHighlights(prev => prev.filter(h => h.id !== selectedHighlightId));
+                          setSelectedHighlightId(null);
+                        }}
+                        className="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                        title="Xóa vùng đang chọn (Phím Delete)"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                        <span>Xóa</span>
+                      </button>
+                    </div>
                   ) : (
-                    <div className="text-[11px] text-amber-900 leading-tight max-w-[150px]">
-                      Kéo chuột tạo khung tô sáng, hoặc click vào chữ
+                    <div className="text-[11px] text-amber-900 leading-tight max-w-[130px]">
+                      {highlightToolMode === 'highlight' ? 'Kéo chuột tạo khung tô sáng, hoặc click vào chữ' : 'Kéo chuột quét qua vết màu vàng cần tẩy'}
                     </div>
                   )}
 
@@ -3114,7 +4015,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => {
-                        if (confirm(`Bạn có chắc chắn muốn xóa tất cả ${highlights.length} vùng tô sáng?`)) {
+                        if (confirm(`Bạn có chắc chắn muốn xóa tất cả ${highlights.length} vùng tô sáng/tẩy màu?`)) {
                           setHighlights([]);
                           setSelectedHighlightId(null);
                         }
@@ -3128,7 +4029,245 @@ export default function App() {
                   )}
                 </div>
 
-                <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-amber-900/60 uppercase tracking-wider font-semibold">Tùy chọn tô sáng (Highlight)</div>
+                <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-amber-900/60 uppercase tracking-wider font-semibold">Tùy chọn tô sáng & Tẩy vết màu cũ</div>
+              </div>
+            </>
+          );
+        })()}
+
+        {(activeTool === 'Text Box' || selectedTextBoxId !== null) && (() => {
+          const selectedTb = textBoxes.find(t => t.id === selectedTextBoxId);
+          const currentFont = selectedTb?.fontFamily || tbFontFamily;
+          const currentSize = selectedTb?.fontSize || tbFontSize;
+          const currentBold = selectedTb !== undefined ? !!selectedTb.isBold : tbIsBold;
+          const currentItalic = selectedTb !== undefined ? !!selectedTb.isItalic : tbIsItalic;
+          const currentColor = selectedTb?.color || tbColor;
+          const currentAlign = selectedTb?.textAlign || tbTextAlign;
+          const currentHasBg = selectedTb !== undefined ? !!selectedTb.hasBackground : tbHasBackground;
+          const currentHasBorder = selectedTb !== undefined ? !!selectedTb.hasBorder : tbHasBorder;
+
+          return (
+            <>
+              <div className="w-px h-16 bg-gray-300"></div>
+
+              {/* Text Box Formatting Ribbon Group */}
+              <div className="flex items-center gap-2.5 bg-white/95 border border-blue-300 rounded-xl px-3 py-1 h-[68px] shadow-xs relative">
+                {/* 1. Font Family */}
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[9px] font-bold text-blue-950 uppercase tracking-wider">Phông chữ</span>
+                  <select
+                    value={currentFont}
+                    onChange={(e) => updateCurrentTextBox({ fontFamily: e.target.value })}
+                    className="text-xs font-semibold bg-white border border-gray-300 rounded px-2 py-1 outline-none focus:ring-1 focus:ring-blue-500 shadow-xs cursor-pointer max-w-[155px]"
+                    style={{ fontFamily: getFontFamily(currentFont) }}
+                  >
+                    <option value="Times New Roman">Times New Roman (Chuẩn VN)</option>
+                    <option value="Arial">Arial (Không chân)</option>
+                    <option value="Roboto">Roboto (Hiện đại)</option>
+                    <option value="Courier New">Courier New (Đơn khoảng)</option>
+                  </select>
+                </div>
+
+                {/* 2. Font Size + Quick buttons */}
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[9px] font-bold text-blue-950 uppercase tracking-wider">Cỡ chữ</span>
+                  <div className="flex items-center gap-1">
+                    <select
+                      value={currentSize}
+                      onChange={(e) => updateCurrentTextBox({ fontSize: Number(e.target.value) })}
+                      className="text-xs font-semibold bg-white border border-gray-300 rounded px-1.5 py-1 outline-none focus:ring-1 focus:ring-blue-500 shadow-xs cursor-pointer w-14"
+                    >
+                      {[8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 36, 40, 48, 60, 72].map(sz => (
+                        <option key={sz} value={sz}>{sz} pt</option>
+                      ))}
+                    </select>
+                    <div className="flex flex-col gap-0.5">
+                      <button
+                        type="button"
+                        title="Tăng cỡ chữ"
+                        onClick={() => updateCurrentTextBox({ fontSize: Math.min(100, currentSize + 1) })}
+                        className="w-5 h-3.5 flex items-center justify-center bg-white hover:bg-blue-100 border border-gray-300 rounded text-[9px] font-bold text-gray-700 cursor-pointer"
+                      >
+                        ▲
+                      </button>
+                      <button
+                        type="button"
+                        title="Giảm cỡ chữ"
+                        onClick={() => updateCurrentTextBox({ fontSize: Math.max(6, currentSize - 1) })}
+                        className="w-5 h-3.5 flex items-center justify-center bg-white hover:bg-blue-100 border border-gray-300 rounded text-[9px] font-bold text-gray-700 cursor-pointer"
+                      >
+                        ▼
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="w-px h-10 bg-blue-200/80"></div>
+
+                {/* 3. Bold, Italic, Alignment & Color */}
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[9px] font-bold text-blue-950 uppercase tracking-wider">Định dạng & Màu</span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      title="In đậm (Bold)"
+                      onClick={() => updateCurrentTextBox({ isBold: !currentBold })}
+                      className={`w-7 h-7 flex items-center justify-center rounded border transition-all text-xs font-serif font-black cursor-pointer ${
+                        currentBold
+                          ? 'bg-blue-600 text-white border-blue-700 shadow-xs font-bold'
+                          : 'bg-white hover:bg-gray-100 text-gray-800 border-gray-300'
+                      }`}
+                    >
+                      B
+                    </button>
+                    <button
+                      type="button"
+                      title="In nghiêng (Italic)"
+                      onClick={() => updateCurrentTextBox({ isItalic: !currentItalic })}
+                      className={`w-7 h-7 flex items-center justify-center rounded border transition-all text-xs font-serif italic font-bold cursor-pointer ${
+                        currentItalic
+                          ? 'bg-blue-600 text-white border-blue-700 shadow-xs font-bold'
+                          : 'bg-white hover:bg-gray-100 text-gray-800 border-gray-300'
+                      }`}
+                    >
+                      I
+                    </button>
+
+                    {/* Alignment */}
+                    <div className="flex items-center bg-gray-100 rounded border border-gray-300 p-0.5">
+                      <button
+                        type="button"
+                        title="Căn trái"
+                        onClick={() => updateCurrentTextBox({ textAlign: 'left' })}
+                        className={`p-1 rounded cursor-pointer ${currentAlign === 'left' ? 'bg-white text-blue-700 shadow-2xs font-bold' : 'text-gray-600 hover:text-gray-900'}`}
+                      >
+                        <AlignLeft className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Căn giữa"
+                        onClick={() => updateCurrentTextBox({ textAlign: 'center' })}
+                        className={`p-1 rounded cursor-pointer ${currentAlign === 'center' ? 'bg-white text-blue-700 shadow-2xs font-bold' : 'text-gray-600 hover:text-gray-900'}`}
+                      >
+                        <AlignCenter className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Căn phải"
+                        onClick={() => updateCurrentTextBox({ textAlign: 'right' })}
+                        className={`p-1 rounded cursor-pointer ${currentAlign === 'right' ? 'bg-white text-blue-700 shadow-2xs font-bold' : 'text-gray-600 hover:text-gray-900'}`}
+                      >
+                        <AlignRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    {/* Color Picker */}
+                    <label
+                      className="w-7 h-7 rounded border border-gray-300 flex flex-col items-center justify-center cursor-pointer bg-white overflow-hidden shadow-xs hover:border-blue-400"
+                      title="Màu chữ"
+                    >
+                      <span className="text-[11px] font-black leading-none" style={{ color: currentColor }}>A</span>
+                      <span className="w-4 h-1 mt-0.5 rounded-full" style={{ backgroundColor: currentColor }}></span>
+                      <input
+                        type="color"
+                        value={currentColor}
+                        onChange={(e) => updateCurrentTextBox({ color: e.target.value })}
+                        className="sr-only"
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="w-px h-10 bg-blue-200/80"></div>
+
+                {/* 4. Background (Nền trắng vs Trong suốt) - CRITICAL REQUIREMENT */}
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[9px] font-bold text-blue-950 uppercase tracking-wider">Màu nền ô chữ</span>
+                  <div className="flex items-center bg-gray-100 p-0.5 rounded-lg border border-gray-300">
+                    <button
+                      type="button"
+                      onClick={() => updateCurrentTextBox({ hasBackground: false })}
+                      className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                        !currentHasBg
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-gray-700 hover:bg-gray-200'
+                      }`}
+                      title="Nền trong suốt, chữ nổi trực tiếp trên nền tài liệu"
+                    >
+                      <span className="w-2.5 h-2.5 rounded-xs border border-current bg-transparent inline-block" />
+                      <span>Trong suốt</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateCurrentTextBox({ hasBackground: true })}
+                      className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                        currentHasBg
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-gray-700 hover:bg-gray-200'
+                      }`}
+                      title="Nền màu trắng để che nền cũ hoặc che chữ cũ bên dưới"
+                    >
+                      <span className="w-2.5 h-2.5 rounded-xs border border-gray-400 bg-white inline-block shadow-2xs" />
+                      <span>Nền trắng</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="w-px h-10 bg-blue-200/80"></div>
+
+                {/* 5. Border toggle (Không viền vs Có viền) */}
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[9px] font-bold text-blue-950 uppercase tracking-wider">Khung viền</span>
+                  <button
+                    type="button"
+                    onClick={() => updateCurrentTextBox({ hasBorder: !currentHasBorder })}
+                    className={`flex items-center gap-1.5 px-2 py-1 rounded border text-xs font-semibold transition-all cursor-pointer ${
+                      currentHasBorder
+                        ? 'bg-blue-50 border-blue-500 text-blue-800'
+                        : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+                    }`}
+                    title={currentHasBorder ? "Bấm để tắt viền ô chữ" : "Bấm để thêm viền bao quanh ô chữ"}
+                  >
+                    <Square className={`w-3.5 h-3.5 ${currentHasBorder ? 'stroke-[2.5] text-blue-700' : 'text-gray-500'}`} />
+                    <span>{currentHasBorder ? 'Có viền' : 'Không viền'}</span>
+                  </button>
+                </div>
+
+                {/* 6. Actions: Delete / Done */}
+                {selectedTb && (
+                  <>
+                    <div className="w-px h-10 bg-blue-200/80"></div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTextBoxes(prev => prev.filter(t => t.id !== selectedTb.id));
+                          setSelectedTextBoxId(null);
+                          setEditingTextBoxId(null);
+                        }}
+                        className="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                        title="Xóa ô chữ này (Phím Delete)"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                        <span>Xóa ô</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedTextBoxId(null);
+                          setEditingTextBoxId(null);
+                        }}
+                        className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                        title="Hoàn tất chỉnh sửa ô này"
+                      >
+                        <Check className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Xong</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-blue-900/60 uppercase tracking-wider font-semibold">Tùy chọn ô chữ (Text Box)</div>
               </div>
             </>
           );
@@ -3214,12 +4353,20 @@ export default function App() {
         )}
 
         {/* Floating Indicator for Continuous Mode */}
-        {(activeTool === 'Signature Field' || activeTool === 'Text Field') && (
+        {activeTool === 'Signature Field' && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-indigo-900/95 text-white px-4 py-2.5 rounded-full shadow-lg flex items-center gap-2.5 text-xs font-semibold backdrop-blur-md border border-indigo-500/30 animate-bounce z-50">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             <span>
-              Đang ở chế độ tạo liên tục {activeTool === 'Signature Field' ? 'trường chữ ký' : 'trường văn bản'} (Nhấn <kbd className="bg-indigo-700 px-1.5 py-0.5 rounded text-[10px] border border-indigo-500 font-mono">ESC</kbd> hoặc nút <b>Chọn</b> để thoát)
+              Đang ở chế độ tạo liên tục trường chữ ký (Nhấn <kbd className="bg-indigo-700 px-1.5 py-0.5 rounded text-[10px] border border-indigo-500 font-mono">ESC</kbd> hoặc nút <b>Chọn</b> để thoát)
             </span>
+          </div>
+        )}
+
+        {activeTool === 'Text Box' && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-blue-900/95 text-white px-4 py-2.5 rounded-full shadow-lg flex items-center gap-2.5 text-xs font-semibold backdrop-blur-md border border-blue-500/30 animate-bounce z-50">
+            <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+            <Type className="w-4 h-4 text-blue-300" />
+            <span>Kéo chuột hoặc nhấp vào trang để chèn ô chữ (Nhấn <kbd className="bg-blue-700 px-1.5 py-0.5 rounded text-[10px] border border-blue-500 font-mono">ESC</kbd> hoặc nút <b>Chọn</b> để thoát)</span>
           </div>
         )}
 
@@ -3242,7 +4389,7 @@ export default function App() {
           >
             <div 
                className={`bg-white shadow-xl w-[800px] h-[1131px] relative origin-top-left transition-all flex-shrink-0 ${
-                 activeTool === 'Signature Field' ? 'cursor-crosshair' : 'cursor-default'
+                 (activeTool === 'Signature Field' || activeTool === 'Highlight' || activeTool === 'Text Box') ? 'cursor-crosshair' : 'cursor-default'
                }`}
                style={{
                  transform: `scale(${zoom})`,
@@ -3274,6 +4421,7 @@ export default function App() {
 
                 {renderFields(0)}
                 {renderHighlights(0)}
+                {renderTextBoxes(0)}
                 {renderDrawingBox(0)}
             </div>
           </div>
@@ -3341,7 +4489,7 @@ export default function App() {
                    <div 
                      id={`page-${i}`}
                      className={`bg-white shadow-xl relative origin-top-left transition-all duration-150 flex-shrink-0 ${
-                       (activeTool === 'Signature Field' || activeTool === 'Text Field' || activeTool === 'Highlight') ? 'cursor-crosshair' : 'cursor-default'
+                       (activeTool === 'Signature Field' || activeTool === 'Highlight' || activeTool === 'Text Box') ? 'cursor-crosshair' : 'cursor-default'
                      } ${isPageSelected ? 'ring-4 ring-indigo-500 ring-offset-2 scale-[1.005] z-20' : ''}`}
                      style={{ 
                        width: p.width, 
@@ -3354,6 +4502,7 @@ export default function App() {
                       <img src={p.dataUrl} className="w-full h-full pointer-events-none select-none" alt={`Trang ${i+1}`} />
                       {renderFields(i)}
                       {renderHighlights(i)}
+                      {renderTextBoxes(i)}
                       {activeTool === 'Edit Text' && renderOriginalTexts(i)}
                       {renderModifiedTextsOverlay(i)}
                       {renderDrawingBox(i)}
@@ -3419,14 +4568,14 @@ export default function App() {
                     className="bg-gray-50 border border-gray-300 text-gray-900 text-xs rounded-lg focus:ring-indigo-500 focus:border-indigo-500 px-2 py-1 cursor-pointer font-medium"
                  >
                     <option value="" disabled>Chọn đích...</option>
-                    {pages.map((_, idx) => {
-                       if (selectedPageIndices.includes(idx)) return null;
-                       return (
-                          <option key={idx} value={idx}>Trang {idx + 1}</option>
-                       );
-                    })}
+                    {pages
+                       .map((_, idx) => idx)
+                       .filter(idx => !selectedPageIndices.includes(idx))
+                       .map(idx => (
+                          <option key={`page-dest-${idx}`} value={idx}>Trang {idx + 1}</option>
+                       ))}
                     {!selectedPageIndices.includes(pages.length) && (
-                       <option value={pages.length}>Cuối tài liệu</option>
+                       <option key="page-dest-end" value={pages.length}>Cuối tài liệu</option>
                     )}
                  </select>
               </div>
@@ -3472,6 +4621,8 @@ export default function App() {
       .filter(h => h.pageIndex === pageIndex)
       .map(h => {
         const isSelected = h.id === selectedHighlightId;
+        const isWhiteout = !!h.isWhiteout;
+
         return (
           <div
             key={h.id}
@@ -3506,19 +4657,68 @@ export default function App() {
               }
             }}
             className={`absolute group cursor-pointer transition-shadow z-25 rounded-xs select-none ${
-              isSelected ? 'ring-2 ring-amber-500 ring-offset-1 shadow-md' : 'hover:ring-1 hover:ring-amber-400'
+              isWhiteout
+                ? isSelected
+                  ? 'ring-2 ring-blue-600 border border-blue-400 shadow-md'
+                  : 'hover:ring-1 hover:ring-blue-400 border border-dashed border-blue-300'
+                : isSelected
+                ? 'ring-2 ring-amber-500 ring-offset-1 shadow-md'
+                : 'hover:ring-1 hover:ring-amber-400'
             }`}
             style={{
               left: h.x,
               top: h.y,
               width: h.width,
               height: h.height,
-              backgroundColor: h.color,
-              opacity: h.opacity || 0.45,
-              mixBlendMode: 'multiply',
+              backgroundColor: isWhiteout ? '#ffffff' : h.color,
+              opacity: isWhiteout ? 1 : (h.opacity || 0.45),
+              mixBlendMode: isWhiteout ? 'normal' : 'multiply',
             }}
-            title="Khung tô sáng (Click để chọn, phím Delete hoặc nút X để xóa)"
+            title={isWhiteout ? "Vùng tẩy vết màu cũ (Nhấn Delete hoặc nút X đỏ để xóa)" : "Khung tô sáng (Click để chọn, phím Delete hoặc nút X để xóa)"}
           >
+            {/* Whiteout background and crisp original text */}
+            {isWhiteout && (
+              <div className="absolute inset-0 bg-white overflow-hidden pointer-events-none select-none">
+                {pdfTexts
+                  .filter(t => t.pageIndex === pageIndex && !t.isModified &&
+                    t.x + t.width >= h.x - 2 && t.x <= h.x + h.width + 2 &&
+                    t.y + t.height >= h.y - 2 && t.y <= h.y + h.height + 2
+                  )
+                  .map(t => {
+                    const sizeToUse = (t.customFontSize || t.fontSize) * 1.5;
+                    const fontNameLower = (t.customFontFamily || t.fontName || '').toLowerCase();
+                    const isSans = fontNameLower.includes('sans') || fontNameLower.includes('arial') || fontNameLower.includes('roboto') || fontNameLower.includes('helvetica');
+                    const fontFamily = isSans ? 'Arial, Helvetica, sans-serif' : '"Times New Roman", Times, serif';
+                    return (
+                      <div
+                        key={`wh-text-${t.id}`}
+                        style={{
+                          position: 'absolute',
+                          left: t.x - h.x,
+                          top: t.y - h.y,
+                          fontSize: `${sizeToUse}px`,
+                          fontFamily: fontFamily,
+                          fontWeight: t.isBold ? 700 : 400,
+                          fontStyle: t.isItalic ? 'italic' : 'normal',
+                          color: t.customColor || '#000000',
+                          lineHeight: 1.15,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {t.text}
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
+
+            {/* Small badge for whiteout when selected */}
+            {isWhiteout && isSelected && (
+              <div className="absolute -top-5 left-0 flex items-center gap-1 bg-blue-600 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded shadow-sm whitespace-nowrap z-40">
+                <Eraser className="w-2.5 h-2.5" /> Đã tẩy vết màu cũ
+              </div>
+            )}
+
             {/* Resizing handle on right edge */}
             {isSelected && (
               <div
@@ -3542,8 +4742,40 @@ export default function App() {
                     });
                   }
                 }}
-                className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize bg-amber-500/80 hover:bg-amber-600 rounded-r-xs z-30"
-                title="Kéo mép phải để chỉnh độ dài khung tô sáng"
+                className={`absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize rounded-r-xs z-35 ${
+                  isWhiteout ? 'bg-blue-500/80 hover:bg-blue-600' : 'bg-amber-500/80 hover:bg-amber-600'
+                }`}
+                title="Kéo mép phải để chỉnh độ rộng khung"
+              />
+            )}
+
+            {/* Resizing handle on bottom-right corner */}
+            {isSelected && (
+              <div
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  const pageElement = document.getElementById(`page-${pageIndex}`);
+                  if (pageElement) {
+                    const rect = pageElement.getBoundingClientRect();
+                    const startX = (e.clientX - rect.left) / zoom;
+                    const startY = (e.clientY - rect.top) / zoom;
+                    setHighlightInteraction({
+                      id: h.id,
+                      type: 'se',
+                      startX,
+                      startY,
+                      originalX: h.x,
+                      originalY: h.y,
+                      originalWidth: h.width,
+                      originalHeight: h.height,
+                      pageIndex,
+                    });
+                  }
+                }}
+                className={`absolute right-0 bottom-0 w-3 h-3 cursor-se-resize rounded-br-xs z-35 ${
+                  isWhiteout ? 'bg-blue-600' : 'bg-amber-600'
+                }`}
+                title="Kéo góc để chỉnh kích thước"
               />
             )}
 
@@ -3558,10 +4790,194 @@ export default function App() {
               className={`absolute -top-3.5 -right-3.5 w-6 h-6 bg-red-600 hover:bg-red-700 text-white rounded-full flex items-center justify-center shadow-lg transition-all z-40 cursor-pointer ${
                 isSelected ? 'opacity-100 scale-100' : 'opacity-0 group-hover:opacity-100 scale-90 hover:scale-100'
               }`}
-              title="Xóa khung tô sáng này"
+              title="Xóa khung này"
             >
               <Trash2 className="w-3.5 h-3.5 stroke-[2.5]" />
             </button>
+          </div>
+        );
+      });
+  }
+
+  function renderTextBoxes(pageIndex: number) {
+    return textBoxes
+      .filter(tb => tb.pageIndex === pageIndex)
+      .map(tb => {
+        const isSelected = tb.id === selectedTextBoxId;
+        const isEditing = tb.id === editingTextBoxId;
+        const fontFamilyCss = getFontFamily(tb.fontFamily || 'Times New Roman');
+
+        return (
+          <div
+            key={tb.id}
+            id={`textbox-${tb.id}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setSelectedTextBoxId(tb.id);
+              setSelectedFieldId(null);
+              setSelectedHighlightId(null);
+              setSelectedTextId(null);
+              setTbFontFamily(tb.fontFamily || 'Times New Roman');
+              setTbFontSize(tb.fontSize || 12);
+              setTbIsBold(!!tb.isBold);
+              setTbIsItalic(!!tb.isItalic);
+              setTbColor(tb.color || '#000000');
+              setTbTextAlign(tb.textAlign || 'left');
+              setTbHasBackground(!!tb.hasBackground);
+              setTbHasBorder(!!tb.hasBorder);
+            }}
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              setSelectedTextBoxId(tb.id);
+              setEditingTextBoxId(tb.id);
+            }}
+            onMouseDown={(e) => {
+              if (isEditing) return;
+              e.stopPropagation();
+              setSelectedTextBoxId(tb.id);
+              setSelectedFieldId(null);
+              setSelectedHighlightId(null);
+              setSelectedTextId(null);
+              handleTextBoxResizeDown(e, tb, 'drag');
+            }}
+            className={`absolute group select-none transition-shadow z-30 ${
+              isEditing ? 'cursor-text' : 'cursor-move'
+            } ${
+              tb.hasBackground ? 'bg-white' : 'bg-transparent'
+            } ${
+              tb.hasBorder
+                ? 'border border-gray-900'
+                : isSelected
+                ? 'border border-dashed border-blue-500'
+                : 'hover:border hover:border-dashed hover:border-blue-400 border border-transparent'
+            } ${
+              isSelected ? 'ring-2 ring-blue-500 shadow-md ring-offset-1' : ''
+            }`}
+            style={{
+              left: tb.x,
+              top: tb.y,
+              width: tb.width,
+              height: tb.height,
+            }}
+            title="Ô chữ (Nhấp đúp để chỉnh sửa nội dung, kéo để di chuyển, kéo các điểm góc để chỉnh kích thước)"
+          >
+            {/* Editing mode: Textarea */}
+            {isEditing ? (
+              <textarea
+                autoFocus
+                value={tb.text}
+                onChange={(e) => {
+                  updateCurrentTextBox({ text: e.target.value });
+                }}
+                onBlur={() => {
+                  setEditingTextBoxId(null);
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+                className="w-full h-full p-1 bg-transparent resize-none outline-none border-none leading-tight overflow-hidden focus:ring-0 select-text"
+                style={{
+                  fontFamily: fontFamilyCss,
+                  fontSize: `${(tb.fontSize || 12) * 1.5}px`,
+                  fontWeight: tb.isBold ? 700 : 400,
+                  fontStyle: tb.isItalic ? 'italic' : 'normal',
+                  color: tb.color || '#000000',
+                  textAlign: tb.textAlign || 'left',
+                }}
+                placeholder="Nhập nội dung chữ..."
+              />
+            ) : (
+              /* Display mode */
+              <div 
+                className="w-full h-full p-1 overflow-hidden whitespace-pre-wrap break-words leading-tight"
+                style={{
+                  fontFamily: fontFamilyCss,
+                  fontSize: `${(tb.fontSize || 12) * 1.5}px`,
+                  fontWeight: tb.isBold ? 700 : 400,
+                  fontStyle: tb.isItalic ? 'italic' : 'normal',
+                  color: tb.color || '#000000',
+                  textAlign: tb.textAlign || 'left',
+                }}
+              >
+                {tb.text ? (
+                  tb.text
+                ) : (
+                  <span className="text-gray-400 italic text-xs select-none">
+                    Nhấp đúp để nhập chữ...
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Selection indicators & 8 Resize Handles */}
+            {isSelected && !isEditing && (
+              <>
+                {/* Top-left handle */}
+                <div
+                  onMouseDown={(e) => handleTextBoxResizeDown(e, tb, 'nw')}
+                  className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-xs cursor-nwse-resize z-40 shadow-xs"
+                  title="Kéo chỉnh góc trên trái"
+                />
+                {/* Top-middle handle */}
+                <div
+                  onMouseDown={(e) => handleTextBoxResizeDown(e, tb, 'n')}
+                  className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 bg-white border-2 border-blue-600 rounded-xs cursor-ns-resize z-40 shadow-xs"
+                  title="Kéo chỉnh cạnh trên"
+                />
+                {/* Top-right handle */}
+                <div
+                  onMouseDown={(e) => handleTextBoxResizeDown(e, tb, 'ne')}
+                  className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-xs cursor-nesw-resize z-40 shadow-xs"
+                  title="Kéo chỉnh góc trên phải"
+                />
+                {/* Right-middle handle */}
+                <div
+                  onMouseDown={(e) => handleTextBoxResizeDown(e, tb, 'e')}
+                  className="absolute top-1/2 -translate-y-1/2 -right-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-xs cursor-ew-resize z-40 shadow-xs"
+                  title="Kéo chỉnh cạnh phải"
+                />
+                {/* Bottom-right handle */}
+                <div
+                  onMouseDown={(e) => handleTextBoxResizeDown(e, tb, 'se')}
+                  className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-xs cursor-nwse-resize z-40 shadow-xs"
+                  title="Kéo chỉnh góc dưới phải"
+                />
+                {/* Bottom-middle handle */}
+                <div
+                  onMouseDown={(e) => handleTextBoxResizeDown(e, tb, 's')}
+                  className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3 h-3 bg-white border-2 border-blue-600 rounded-xs cursor-ns-resize z-40 shadow-xs"
+                  title="Kéo chỉnh cạnh dưới"
+                />
+                {/* Bottom-left handle */}
+                <div
+                  onMouseDown={(e) => handleTextBoxResizeDown(e, tb, 'sw')}
+                  className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-xs cursor-nesw-resize z-40 shadow-xs"
+                  title="Kéo chỉnh góc dưới trái"
+                />
+                {/* Left-middle handle */}
+                <div
+                  onMouseDown={(e) => handleTextBoxResizeDown(e, tb, 'w')}
+                  className="absolute top-1/2 -translate-y-1/2 -left-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-xs cursor-ew-resize z-40 shadow-xs"
+                  title="Kéo chỉnh cạnh trái"
+                />
+
+                {/* Quick Delete Floating Button */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (initialLoadedTextBoxesRef.current.some(itb => itb.id === tb.id)) {
+                      setDeletedTextBoxes(prev => [...prev, tb]);
+                    }
+                    setTextBoxes(prev => prev.filter(t => t.id !== tb.id));
+                    setSelectedTextBoxId(null);
+                    setEditingTextBoxId(null);
+                  }}
+                  className="absolute -top-3.5 -right-3.5 w-6 h-6 bg-red-600 hover:bg-red-700 text-white rounded-full flex items-center justify-center shadow-md transition-all z-50 cursor-pointer"
+                  title="Xóa ô chữ này (Phím Delete)"
+                >
+                  <Trash2 className="w-3 h-3 stroke-[2.5]" />
+                </button>
+              </>
+            )}
           </div>
         );
       });
@@ -3736,29 +5152,33 @@ export default function App() {
   function renderDrawingBox(pageIndex: number) {
      if (!drawing || drawing.pageIndex !== pageIndex) return null;
      if (activeTool === 'Highlight') {
+       const isEraser = highlightToolMode === 'eraser';
        return (
          <div 
-            className="absolute border-2 border-amber-500 border-dashed rounded-xs z-30 pointer-events-none"
+            className={`absolute border-2 border-dashed rounded-xs z-30 pointer-events-none ${
+              isEraser ? 'border-blue-600 bg-white/80' : 'border-amber-500'
+            }`}
             style={{ 
                 left: Math.min(drawing.startX, drawing.currentX), 
                 top: Math.min(drawing.startY, drawing.currentY), 
                 width: Math.abs(drawing.currentX - drawing.startX), 
                 height: Math.abs(drawing.currentY - drawing.startY),
-                backgroundColor: highlightColor,
-                opacity: highlightOpacity,
-                mixBlendMode: 'multiply'
+                backgroundColor: isEraser ? '#ffffff' : highlightColor,
+                opacity: isEraser ? 0.95 : highlightOpacity,
+                mixBlendMode: isEraser ? 'normal' : 'multiply'
             }}
          >
-            <div className="absolute top-0 left-0 bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 whitespace-nowrap transform -translate-y-[calc(100%+1px)] -translate-x-[1px] leading-none rounded-t shadow-xs">
-              Tô sáng (Highlight)
+            <div className={`absolute top-0 left-0 text-white text-[10px] font-bold px-1.5 py-0.5 whitespace-nowrap transform -translate-y-[calc(100%+1px)] -translate-x-[1px] leading-none rounded-t shadow-xs flex items-center gap-1 ${
+              isEraser ? 'bg-blue-600' : 'bg-amber-500'
+            }`}>
+              {isEraser ? 'Tẩy vết màu cũ (Khôi phục nền trắng)' : 'Tô sáng (Highlight)'}
             </div>
          </div>
        );
      }
-     const isText = activeTool === 'Text Field';
-     const borderClass = isText ? 'border-blue-600 bg-blue-50' : 'border-indigo-600 bg-indigo-50';
-     const labelBg = isText ? 'bg-blue-600' : 'bg-indigo-600';
-     const label = isText ? 'Trường văn bản' : 'Trường chữ ký';
+     const borderClass = 'border-indigo-600 bg-indigo-50';
+     const labelBg = 'bg-indigo-600';
+     const label = 'Trường chữ ký';
      return (
         <div 
            className={`absolute border border-dashed bg-opacity-40 ${borderClass}`}
@@ -3794,10 +5214,8 @@ export default function App() {
   function renderOriginalTexts(pageIndex: number) {
     if (activeTool !== 'Edit Text') return null;
     return pdfTexts
-      .filter(t => t.pageIndex === pageIndex)
+      .filter(t => t.pageIndex === pageIndex && !t.isModified)
       .map(t => {
-        if (t.isModified) return null;
-
         const borderStyleClass = showTextHighlights 
           ? "border border-dashed border-indigo-400/50 bg-indigo-50/15 hover:border-blue-600 hover:bg-blue-100/30" 
           : "border border-dashed border-transparent hover:border-blue-500/70 hover:bg-blue-100/25";

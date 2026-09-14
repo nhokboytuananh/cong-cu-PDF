@@ -56,4 +56,23 @@ export type HighlightItem = {
   color: string;
   opacity?: number;
   text?: string;
+  isWhiteout?: boolean;
+};
+
+export type TextBoxItem = {
+  id: string;
+  pageIndex: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  fontFamily: string;
+  fontSize: number;
+  isBold?: boolean;
+  isItalic?: boolean;
+  color: string;
+  textAlign?: 'left' | 'center' | 'right';
+  hasBackground: boolean; // true = nền trắng (white), false = trong suốt (transparent)
+  hasBorder?: boolean; // true = có viền, false = không viền
 };
