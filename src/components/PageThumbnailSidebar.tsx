@@ -163,6 +163,12 @@ export const PageThumbnailSidebar: React.FC<PageThumbnailSidebarProps> = ({
               Đã chọn: {selectedPageIndices.length}
             </span>
           )}
+          {isDigitallySigned && (
+            <span className="text-[10px] font-bold text-amber-800 bg-amber-100 border border-amber-300 px-1.5 py-0.5 rounded-full flex items-center gap-0.5" title="Tài liệu đã ký số - Chế độ chỉ đọc">
+              <Lock className="w-3 h-3 text-amber-700" />
+              Khóa
+            </span>
+          )}
         </div>
         <button
           type="button"
@@ -181,8 +187,9 @@ export const PageThumbnailSidebar: React.FC<PageThumbnailSidebarProps> = ({
           <button
             type="button"
             onClick={onAddPageClick}
-            title="Thêm các trang từ tệp PDF khác"
-            className="p-1 text-indigo-600 hover:bg-indigo-50 hover:text-indigo-800 rounded transition-colors"
+            disabled={isDigitallySigned}
+            title={isDigitallySigned ? "Tài liệu đã ký số (không thể chèn thêm trang)" : "Thêm các trang từ tệp PDF khác"}
+            className="p-1 text-indigo-600 hover:bg-indigo-50 hover:text-indigo-800 rounded transition-colors disabled:opacity-30 disabled:pointer-events-none"
           >
             <FilePlus className="w-4 h-4" />
           </button>

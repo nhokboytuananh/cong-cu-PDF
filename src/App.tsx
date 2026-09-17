@@ -6,7 +6,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { 
   PenSquare, Layout, FileDown, X, MousePointer2, FileUp, Loader2, FilePlus, Trash2, Type, ArrowUp, ArrowDown, Edit, HelpCircle, Info, CheckCircle2, MousePointerClick,
   RotateCcw, RotateCw, PanelLeft, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Bold, Italic, Check, Sparkles, Highlighter, Eraser,
-  AlignLeft, AlignCenter, AlignRight, Square
+  AlignLeft, AlignCenter, AlignRight, Square, ShieldAlert, Lock
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as pdfLib from 'pdf-lib';
@@ -260,6 +260,7 @@ export default function App() {
 
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
   const [exportFilename, setExportFilename] = useState<string>('');
+  const [showSignedWarningModal, setShowSignedWarningModal] = useState<boolean>(false);
 
   const [showHelpModal, setShowHelpModal] = useState<boolean>(false);
   const [activeHelpTab, setActiveHelpTab] = useState<'document' | 'fields' | 'edit_text' | 'highlights' | 'export_overwrite'>('document');
@@ -642,6 +643,106 @@ export default function App() {
         }
       });
 
+      // Update existing overlays on rotated pages so they stay aligned with the page content
+      const normDelta = (deltaDegrees % 360 + 360) % 360;
+      if (normDelta !== 0) {
+        setTextBoxes(prev => prev.map(tb => {
+          if (!indices.includes(tb.pageIndex)) return tb;
+          const p = pages[tb.pageIndex];
+          if (!p) return tb;
+          const W = p.width;
+          const H = p.height;
+          if (normDelta === 90) {
+            return {
+              ...tb,
+              x: H - (tb.y + tb.height),
+              y: tb.x,
+              width: tb.height,
+              height: tb.width,
+            };
+          } else if (normDelta === 270) {
+            return {
+              ...tb,
+              x: tb.y,
+              y: W - (tb.x + tb.width),
+              width: tb.height,
+              height: tb.width,
+            };
+          } else if (normDelta === 180) {
+            return {
+              ...tb,
+              x: W - (tb.x + tb.width),
+              y: H - (tb.y + tb.height),
+            };
+          }
+          return tb;
+        }));
+
+        setHighlights(prev => prev.map(hl => {
+          if (!indices.includes(hl.pageIndex)) return hl;
+          const p = pages[hl.pageIndex];
+          if (!p) return hl;
+          const W = p.width;
+          const H = p.height;
+          if (normDelta === 90) {
+            return {
+              ...hl,
+              x: H - (hl.y + hl.height),
+              y: hl.x,
+              width: hl.height,
+              height: hl.width,
+            };
+          } else if (normDelta === 270) {
+            return {
+              ...hl,
+              x: hl.y,
+              y: W - (hl.x + hl.width),
+              width: hl.height,
+              height: hl.width,
+            };
+          } else if (normDelta === 180) {
+            return {
+              ...hl,
+              x: W - (hl.x + hl.width),
+              y: H - (hl.y + hl.height),
+            };
+          }
+          return hl;
+        }));
+
+        setFields(prev => prev.map(f => {
+          if (!indices.includes(f.pageIndex)) return f;
+          const p = pages[f.pageIndex];
+          if (!p) return f;
+          const W = p.width;
+          const H = p.height;
+          if (normDelta === 90) {
+            return {
+              ...f,
+              x: H - (f.y + f.height),
+              y: f.x,
+              width: f.height,
+              height: f.width,
+            };
+          } else if (normDelta === 270) {
+            return {
+              ...f,
+              x: f.y,
+              y: W - (f.x + f.width),
+              width: f.height,
+              height: f.width,
+            };
+          } else if (normDelta === 180) {
+            return {
+              ...f,
+              x: W - (f.x + f.width),
+              y: H - (f.y + f.height),
+            };
+          }
+          return f;
+        }));
+      }
+
       const newPdfBytes = await pdfDoc.save();
       setOriginalPdfBuffer(newPdfBytes);
       await renderPdfPages(newPdfBytes);
@@ -671,6 +772,54 @@ export default function App() {
       console.error("Error getting cropbox", e);
     }
     return { boxX, boxY, visibleWidth, visibleHeight };
+  };
+
+  const getPageTransformMatrix = (
+    viewBox: [number, number, number, number],
+    rotation: number
+  ) => {
+    const centerX = (viewBox[2] + viewBox[0]) / 2.0;
+    const centerY = (viewBox[3] + viewBox[1]) / 2.0;
+    let rot = (rotation % 360 + 360) % 360;
+    let rA = 1, rB = 0, rC = 0, rD = -1;
+    if (rot === 180) {
+      rA = -1; rB = 0; rC = 0; rD = 1;
+    } else if (rot === 90) {
+      rA = 0; rB = 1; rC = 1; rD = 0;
+    } else if (rot === 270) {
+      rA = 0; rB = -1; rC = -1; rD = 0;
+    }
+
+    let offsetX = 0, offsetY = 0, width = 0, height = 0;
+    if (rA === 0) {
+      offsetX = Math.abs(centerY - viewBox[1]);
+      offsetY = Math.abs(centerX - viewBox[0]);
+      width = viewBox[3] - viewBox[1];
+      height = viewBox[2] - viewBox[0];
+    } else {
+      offsetX = Math.abs(centerX - viewBox[0]);
+      offsetY = Math.abs(centerY - viewBox[1]);
+      width = viewBox[2] - viewBox[0];
+      height = viewBox[3] - viewBox[1];
+    }
+
+    const m = [
+      rA,
+      rB,
+      rC,
+      rD,
+      offsetX - rA * centerX - rC * centerY,
+      offsetY - rB * centerX - rD * centerY,
+    ];
+
+    return { m, width, height, rot };
+  };
+
+  const screenToPdfPoint = (sx: number, sy: number, m: number[]): { x: number; y: number } => {
+    const d = m[0] * m[3] - m[1] * m[2];
+    const px = (sx * m[3] - sy * m[2] + m[2] * m[5] - m[4] * m[3]) / d;
+    const py = (-sx * m[1] + sy * m[0] + m[4] * m[1] - m[5] * m[0]) / d;
+    return { x: px, y: py };
   };
 
   const isSignatureFieldSigned = (fieldDict: any, widgetDict: any, doc: any): boolean => {
@@ -1175,6 +1324,7 @@ export default function App() {
     const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
     const parsedPages: PdfPage[] = [];
     const extractedTexts: PdfTextItem[] = [];
+    const extractedHighlights: HighlightItem[] = [];
 
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
@@ -1187,10 +1337,63 @@ export default function App() {
       canvas.width = viewport.width;
       canvas.height = viewport.height;
 
+      // Extract existing annotations on the page:
+      // 1. Hide Highlight annotations from being permanently baked into canvas pixels
+      // 2. Load Highlights into interactive/editable overlays
+      // 3. Keep digital signatures (SignatureWidgetAnnotation) and stamps visible on canvas!
+      let pageAnnots: any[] = [];
+      try {
+        pageAnnots = await page.getAnnotations();
+      } catch (annotErr) {
+        // annotations not available
+      }
+
+      if (pageAnnots && Array.isArray(pageAnnots)) {
+        pageAnnots.forEach((annot: any) => {
+          if (annot.subtype === 'Highlight') {
+            if (annot.id) {
+              try {
+                // Set noView: true in pdf.annotationStorage so pdfjs skips baking it into canvas bitmap
+                (pdf as any).annotationStorage?.setValue(annot.id, { noView: true });
+              } catch (e) {
+                // ignore
+              }
+            }
+
+            if (annot.rect) {
+              const [r0, r1, r2, r3] = annot.rect;
+              const [p1x, p1y] = viewport.convertToViewportPoint(r0, r3);
+              const [p2x, p2y] = viewport.convertToViewportPoint(r2, r1);
+              const hx = Math.min(p1x, p2x);
+              const hy = Math.min(p1y, p2y);
+              const hw = Math.abs(p2x - p1x);
+              const hh = Math.abs(p2y - p1y);
+              let hexColor = '#fde047';
+              if (annot.color && Array.isArray(annot.color)) {
+                const r = Math.round(annot.color[0] <= 1 ? annot.color[0] * 255 : annot.color[0]);
+                const g = Math.round(annot.color[1] <= 1 ? annot.color[1] * 255 : annot.color[1]);
+                const b = Math.round(annot.color[2] <= 1 ? annot.color[2] * 255 : annot.color[2]);
+                hexColor = `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+              }
+              extractedHighlights.push({
+                id: `annot-hl-${i - 1}-${annot.id || Math.random().toString(36).substring(2, 7)}`,
+                pageIndex: i - 1,
+                x: hx,
+                y: hy,
+                width: hw,
+                height: hh,
+                color: hexColor,
+                opacity: 0.45,
+              });
+            }
+          }
+        });
+      }
+
       await page.render({
         canvasContext: context,
         viewport: viewport,
-        annotationMode: 0, // 0 = AnnotationMode.DISABLE, keeps canvas clean so highlights can be removed dynamically
+        annotationMode: 3, // 3 = AnnotationMode.ENABLE_STORAGE: preserves digital signatures/stamps while respecting noView for highlights
       } as any).promise;
 
       parsedPages.push({
@@ -1294,53 +1497,23 @@ export default function App() {
           });
         });
 
-        // Extract any existing highlight annotations from the PDF page
-        try {
-          const annots = await page.getAnnotations();
-          if (annots && Array.isArray(annots)) {
-            annots.forEach((annot: any) => {
-              if (annot.subtype === 'Highlight' && annot.rect) {
-                const [r0, r1, r2, r3] = annot.rect;
-                const [p1x, p1y] = viewport.convertToViewportPoint(r0, r3);
-                const [p2x, p2y] = viewport.convertToViewportPoint(r2, r1);
-                const hx = Math.min(p1x, p2x);
-                const hy = Math.min(p1y, p2y);
-                const hw = Math.abs(p2x - p1x);
-                const hh = Math.abs(p2y - p1y);
-                let hexColor = '#fde047';
-                if (annot.color && Array.isArray(annot.color)) {
-                  const r = Math.round(annot.color[0] <= 1 ? annot.color[0] * 255 : annot.color[0]);
-                  const g = Math.round(annot.color[1] <= 1 ? annot.color[1] * 255 : annot.color[1]);
-                  const b = Math.round(annot.color[2] <= 1 ? annot.color[2] * 255 : annot.color[2]);
-                  hexColor = `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
-                }
-                extractedTexts.push; // no-op
-                setHighlights(prev => {
-                  const exists = prev.some(h => h.pageIndex === i - 1 && Math.abs(h.x - hx) < 5 && Math.abs(h.y - hy) < 5);
-                  if (exists) return prev;
-                  return [...prev, {
-                    id: `annot-hl-${i - 1}-${annot.id || Math.random().toString(36).substring(2, 7)}`,
-                    pageIndex: i - 1,
-                    x: hx,
-                    y: hy,
-                    width: hw,
-                    height: hh,
-                    color: hexColor,
-                    opacity: 0.45,
-                  }];
-                });
-              }
-            });
-          }
-        } catch (annotErr) {
-          // annotations not available
-        }
       } catch (err) {
         console.error(`Error extracting text content at page ${i}:`, err);
       }
     }
     setPages(parsedPages);
     setPdfTexts(extractedTexts);
+    if (extractedHighlights.length > 0) {
+      setHighlights(prev => {
+        const merged = [...prev];
+        for (const eh of extractedHighlights) {
+          if (!merged.some(h => h.pageIndex === eh.pageIndex && Math.abs(h.x - eh.x) < 5 && Math.abs(h.y - eh.y) < 5)) {
+            merged.push(eh);
+          }
+        }
+        return merged;
+      });
+    }
     setSelectedPageIndices([]);
     return parsedPages;
   };
@@ -1616,6 +1789,10 @@ export default function App() {
       
       const isSigned = checkIsDigitallySigned(uint8Array);
       setIsDigitallySigned(isSigned);
+      if (isSigned) {
+        setShowSignedWarningModal(true);
+        setActiveTool('Select');
+      }
       
       const parsedPages = await renderPdfPages(uint8Array);
 
@@ -2114,6 +2291,13 @@ export default function App() {
   };
 
   const handleMouseDown = (e: React.MouseEvent, pageIndex: number) => {
+    if (isDigitallySigned) {
+      setSelectedFieldId(null);
+      setSelectedHighlightId(null);
+      setSelectedTextBoxId(null);
+      setEditingTextBoxId(null);
+      return;
+    }
     if (activeTool === 'Select') {
       setSelectedFieldId(null);
       setSelectedHighlightId(null);
@@ -2122,10 +2306,6 @@ export default function App() {
       return;
     }
     if (activeTool !== 'Signature Field' && activeTool !== 'Highlight' && activeTool !== 'Text Box') return;
-    if (isDigitallySigned && activeTool === 'Signature Field') {
-      alert("Tài liệu này đã được ký số. Không thể thêm trường chữ ký mới.");
-      return;
-    }
     
     setSelectedFieldId(null);
     setSelectedHighlightId(null);
@@ -2141,6 +2321,7 @@ export default function App() {
   };
 
   const handleResizeDown = (e: React.MouseEvent, f: Field, type: 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw') => {
+      if (isDigitallySigned) return;
       e.stopPropagation();
       const pageElement = (e.currentTarget as HTMLElement).closest('[id^="page-"]') as HTMLDivElement;
       if (pageElement) {
@@ -2162,6 +2343,7 @@ export default function App() {
   };
 
   const handleTextBoxResizeDown = (e: React.MouseEvent, tb: TextBoxItem, type: 'drag' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw') => {
+    if (isDigitallySigned) return;
     e.stopPropagation();
     const pageElement = (e.currentTarget as HTMLElement).closest('[id^="page-"]') as HTMLDivElement;
     if (pageElement) {
@@ -2590,10 +2772,26 @@ export default function App() {
           // ignore
         }
 
+        let angle = 0;
+        try {
+          const rotVal = page.getRotation();
+          if (rotVal && typeof rotVal.angle === 'number') {
+            angle = rotVal.angle;
+          } else if (typeof rotVal === 'number') {
+            angle = rotVal;
+          }
+        } catch (e) {}
+        angle = (angle % 360 + 360) % 360;
+
         const parsedPage = pages[pIdx];
         if (!parsedPage) continue;
-        const scaleX = visibleWidth / parsedPage.width;
-        const scaleY = visibleHeight / parsedPage.height;
+
+        const { m, width: effW, height: effH, rot } = getPageTransformMatrix(
+          [boxX, boxY, boxX + visibleWidth, boxY + visibleHeight],
+          angle
+        );
+        const scaleX = effW / parsedPage.width;
+        const scaleY = effH / parsedPage.height;
 
         // Clean out any previous /Highlight annotations on this page so deleted ones are permanently removed
         const annots = page.node.lookup(pdfLib.PDFName.of('Annots'));
@@ -2612,19 +2810,19 @@ export default function App() {
 
         const pageHighlights = highlights.filter(h => h.pageIndex === pIdx);
         for (const h of pageHighlights) {
-          const pdfHlX = boxX + (h.x * scaleX);
-          const pdfHlY = boxY + (visibleHeight - (h.y + h.height) * scaleY);
+          const bl = screenToPdfPoint(h.x * scaleX, (h.y + h.height) * scaleY, m);
           const pdfHlW = h.width * scaleX;
           const pdfHlH = h.height * scaleY;
 
           if (h.isWhiteout) {
             // Whiteout covers the old baked yellow stain with white
             page.drawRectangle({
-              x: pdfHlX,
-              y: pdfHlY,
+              x: bl.x,
+              y: bl.y,
               width: pdfHlW,
               height: pdfHlH,
               color: pdfLib.rgb(1, 1, 1),
+              rotate: pdfLib.degrees(rot),
             });
 
             // Redraw crisp text inside this whiteout box so text remains visible and sharp
@@ -2649,8 +2847,8 @@ export default function App() {
               }
 
               const fontSizeToUse = t.customFontSize || t.pdfHeight;
-              const finalPdfX = t.pdfX || (boxX + t.x * scaleX);
-              const finalPdfY = t.pdfY || (boxY + (visibleHeight - (t.y + t.height) * scaleY));
+              const finalPdfX = t.pdfX;
+              const finalPdfY = t.pdfY;
 
               try {
                 page.drawText(t.text, {
@@ -2668,17 +2866,26 @@ export default function App() {
           } else {
             // Standard PDF Highlight Annotation (non-destructive, interactive in Foxit/Adobe/etc.)
             const rgb = hexToRgb(h.color || '#fde047');
+            const tl = screenToPdfPoint(h.x * scaleX, h.y * scaleY, m);
+            const tr = screenToPdfPoint((h.x + h.width) * scaleX, h.y * scaleY, m);
+            const blPt = screenToPdfPoint(h.x * scaleX, (h.y + h.height) * scaleY, m);
+            const brPt = screenToPdfPoint((h.x + h.width) * scaleX, (h.y + h.height) * scaleY, m);
+            const minX = Math.min(tl.x, tr.x, blPt.x, brPt.x);
+            const maxX = Math.max(tl.x, tr.x, blPt.x, brPt.x);
+            const minY = Math.min(tl.y, tr.y, blPt.y, brPt.y);
+            const maxY = Math.max(tl.y, tr.y, blPt.y, brPt.y);
+
             const annotDict = pdfDoc.context.obj({
               Type: 'Annot',
               Subtype: 'Highlight',
-              Rect: [pdfHlX, pdfHlY, pdfHlX + pdfHlW, pdfHlY + pdfHlH],
+              Rect: [minX, minY, maxX, maxY],
               C: [rgb.red, rgb.green, rgb.blue],
               CA: h.opacity || 0.45,
               QuadPoints: [
-                pdfHlX, pdfHlY + pdfHlH,
-                pdfHlX + pdfHlW, pdfHlY + pdfHlH,
-                pdfHlX, pdfHlY,
-                pdfHlX + pdfHlW, pdfHlY
+                tl.x, tl.y,
+                tr.x, tr.y,
+                blPt.x, blPt.y,
+                brPt.x, brPt.y,
               ],
               F: 4,
             });
@@ -2733,19 +2940,32 @@ export default function App() {
             }
           } catch (e) {}
 
-          const scaleX = visibleWidth / parsedPage.width;
-          const scaleY = visibleHeight / parsedPage.height;
-          const pdfX = boxX + (dtb.x * scaleX);
-          const pdfY = boxY + (visibleHeight - (dtb.y + dtb.height) * scaleY);
-          const pdfW = dtb.width * scaleX;
-          const pdfH = dtb.height * scaleY;
+          let angle = 0;
+          try {
+            const rotVal = page.getRotation();
+            if (rotVal && typeof rotVal.angle === 'number') {
+              angle = rotVal.angle;
+            } else if (typeof rotVal === 'number') {
+              angle = rotVal;
+            }
+          } catch (e) {}
+          angle = (angle % 360 + 360) % 360;
 
+          const { m, width: effW, height: effH, rot } = getPageTransformMatrix(
+            [boxX, boxY, boxX + visibleWidth, boxY + visibleHeight],
+            angle
+          );
+          const scaleX = effW / parsedPage.width;
+          const scaleY = effH / parsedPage.height;
+
+          const bl = screenToPdfPoint((dtb.x - 1) * scaleX, (dtb.y + dtb.height + 1) * scaleY, m);
           page.drawRectangle({
-            x: pdfX - 1,
-            y: pdfY - 1,
-            width: pdfW + 2,
-            height: pdfH + 2,
+            x: bl.x,
+            y: bl.y,
+            width: (dtb.width + 2) * scaleX,
+            height: (dtb.height + 2) * scaleY,
             color: pdfLib.rgb(1, 1, 1),
+            rotate: pdfLib.degrees(rot),
           });
         }
       }
@@ -2771,11 +2991,11 @@ export default function App() {
 
         let angle = 0;
         try {
-          const rot = page.getRotation();
-          if (rot && typeof rot.angle === 'number') {
-            angle = rot.angle;
-          } else if (typeof rot === 'number') {
-            angle = rot;
+          const rotVal = page.getRotation();
+          if (rotVal && typeof rotVal.angle === 'number') {
+            angle = rotVal.angle;
+          } else if (typeof rotVal === 'number') {
+            angle = rotVal;
           }
         } catch (e) {}
         angle = (angle % 360 + 360) % 360;
@@ -2785,58 +3005,38 @@ export default function App() {
         const canvasWidth = parsedPage.width;
         const canvasHeight = parsedPage.height;
 
+        const { m, width: effW, height: effH, rot } = getPageTransformMatrix(
+          [boxX, boxY, boxX + visibleWidth, boxY + visibleHeight],
+          angle
+        );
+        const scaleX = effW / canvasWidth;
+        const scaleY = effH / canvasHeight;
+
         const pageTextBoxes = textBoxes.filter(tb => tb.pageIndex === pIdx);
         for (const tb of pageTextBoxes) {
-          let pdfTbX = 0;
-          let pdfTbY = 0;
-          let pdfTbW = 0;
-          let pdfTbH = 0;
-
-          if (angle === 90) {
-            const scaleX = visibleHeight / canvasWidth;
-            const scaleY = visibleWidth / canvasHeight;
-            pdfTbX = boxX + (tb.y * scaleY);
-            pdfTbY = boxY + (tb.x * scaleX);
-            pdfTbW = tb.height * scaleY;
-            pdfTbH = tb.width * scaleX;
-          } else if (angle === 180) {
-            const scaleX = visibleWidth / canvasWidth;
-            const scaleY = visibleHeight / canvasHeight;
-            pdfTbX = boxX + (visibleWidth - (tb.x + tb.width) * scaleX);
-            pdfTbY = boxY + (tb.y * scaleY);
-            pdfTbW = tb.width * scaleX;
-            pdfTbH = tb.height * scaleY;
-          } else if (angle === 270) {
-            const scaleX = visibleHeight / canvasWidth;
-            const scaleY = visibleWidth / canvasHeight;
-            pdfTbX = boxX + (visibleWidth - (tb.y + tb.height) * scaleY);
-            pdfTbY = boxY + (visibleHeight - (tb.x + tb.width) * scaleX);
-            pdfTbW = tb.height * scaleX;
-            pdfTbH = tb.width * scaleX;
-          } else {
-            const scaleX = visibleWidth / canvasWidth;
-            const scaleY = visibleHeight / canvasHeight;
-            pdfTbX = boxX + (tb.x * scaleX);
-            pdfTbY = boxY + (visibleHeight - (tb.y + tb.height) * scaleY);
-            pdfTbW = tb.width * scaleX;
-            pdfTbH = tb.height * scaleY;
-          }
+          const blScreen = {
+            x: tb.x * scaleX,
+            y: (tb.y + tb.height) * scaleY,
+          };
+          const pdfBl = screenToPdfPoint(blScreen.x, blScreen.y, m);
+          const pdfBoxW = tb.width * scaleX;
+          const pdfBoxH = tb.height * scaleY;
 
           // If the box was originally loaded from PDF and moved, erase its old position
           const initialTb = initialLoadedTextBoxesRef.current.find(itb => itb.id === tb.id);
           if (initialTb && (Math.abs(initialTb.x - tb.x) > 2 || Math.abs(initialTb.y - tb.y) > 2)) {
-            const scaleX = visibleWidth / canvasWidth;
-            const scaleY = visibleHeight / canvasHeight;
-            const oldPdfX = boxX + (initialTb.x * scaleX);
-            const oldPdfY = boxY + (visibleHeight - (initialTb.y + initialTb.height) * scaleY);
-            const oldPdfW = initialTb.width * scaleX;
-            const oldPdfH = initialTb.height * scaleY;
+            const oldBlScreen = {
+              x: (initialTb.x - 1) * scaleX,
+              y: (initialTb.y + initialTb.height + 1) * scaleY,
+            };
+            const oldPdfBl = screenToPdfPoint(oldBlScreen.x, oldBlScreen.y, m);
             page.drawRectangle({
-              x: oldPdfX - 1,
-              y: oldPdfY - 1,
-              width: oldPdfW + 2,
-              height: oldPdfH + 2,
+              x: oldPdfBl.x,
+              y: oldPdfBl.y,
+              width: (initialTb.width + 2) * scaleX,
+              height: (initialTb.height + 2) * scaleY,
               color: pdfLib.rgb(1, 1, 1),
+              rotate: pdfLib.degrees(rot),
             });
           }
 
@@ -2861,22 +3061,24 @@ export default function App() {
           // 1. Draw white background if requested (to cover old text or highlight box)
           if (tb.hasBackground) {
             page.drawRectangle({
-              x: pdfTbX,
-              y: pdfTbY,
-              width: pdfTbW,
-              height: pdfTbH,
+              x: pdfBl.x,
+              y: pdfBl.y,
+              width: pdfBoxW,
+              height: pdfBoxH,
               color: pdfLib.rgb(1, 1, 1),
               borderWidth: tb.hasBorder ? 1 : 0,
               borderColor: tb.hasBorder ? textColor : undefined,
+              rotate: pdfLib.degrees(rot),
             });
           } else if (tb.hasBorder) {
             page.drawRectangle({
-              x: pdfTbX,
-              y: pdfTbY,
-              width: pdfTbW,
-              height: pdfTbH,
+              x: pdfBl.x,
+              y: pdfBl.y,
+              width: pdfBoxW,
+              height: pdfBoxH,
               borderWidth: 1,
               borderColor: textColor,
+              rotate: pdfLib.degrees(rot),
             });
           }
 
@@ -2884,7 +3086,7 @@ export default function App() {
           if (tb.text && tb.text.trim()) {
             const rawLines = tb.text.split('\n');
             const finalLines: string[] = [];
-            const maxLineWidth = Math.max(10, pdfTbW - 8);
+            const maxLineWidth = Math.max(10, pdfBoxW - 8);
 
             for (const rLine of rawLines) {
               if (!rLine) {
@@ -2911,36 +3113,41 @@ export default function App() {
               }
             }
 
-            let curY = pdfTbY + pdfTbH - fontSizeToUse - 4;
-            for (const line of finalLines) {
-              if (curY < pdfTbY - fontSizeToUse) break;
+            for (let lineIdx = 0; lineIdx < finalLines.length; lineIdx++) {
+              const line = finalLines[lineIdx];
+              const lineScreenY = (tb.y + 4 + fontSizeToUse + lineIdx * lineHeight) * scaleY;
+              if (lineScreenY > (tb.y + tb.height + fontSizeToUse) * scaleY) break;
+
               if (line) {
-                let curX = pdfTbX + 4;
+                let padX = 4;
                 if (tb.textAlign === 'center' || tb.textAlign === 'right') {
                   let lineW = line.length * (fontSizeToUse * 0.52);
                   try {
                     lineW = fontToUse.widthOfTextAtSize(line, fontSizeToUse);
                   } catch (e) {}
                   if (tb.textAlign === 'center') {
-                    curX = pdfTbX + (pdfTbW - lineW) / 2;
+                    padX = Math.max(4, (pdfBoxW - lineW) / 2);
                   } else if (tb.textAlign === 'right') {
-                    curX = pdfTbX + pdfTbW - lineW - 4;
+                    padX = Math.max(4, pdfBoxW - lineW - 4);
                   }
                 }
 
+                const lineScreenX = (tb.x + padX) * scaleX;
+                const pdfLinePt = screenToPdfPoint(lineScreenX, lineScreenY, m);
+
                 try {
                   page.drawText(line, {
-                    x: Math.max(0, curX),
-                    y: Math.max(0, curY),
+                    x: pdfLinePt.x,
+                    y: pdfLinePt.y,
                     size: fontSizeToUse,
                     font: fontToUse,
                     color: textColor,
+                    rotate: pdfLib.degrees(rot),
                   });
                 } catch (e) {
                   console.warn('Error drawing text line in PDF:', e);
                 }
               }
-              curY -= lineHeight;
             }
           }
         }
@@ -3191,6 +3398,50 @@ export default function App() {
               <div className="flex gap-4">
                  <button className="px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300" onClick={() => setDeletePageConfirm(null)}>Hủy</button>
                  <button className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 font-bold" onClick={handleDeletePageConfirm}>Xóa</button>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {showSignedWarningModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-[160] p-4 animate-fade-in">
+           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full border border-amber-200 overflow-hidden flex flex-col">
+              <div className="bg-gradient-to-r from-amber-500 to-amber-600 px-5 py-3.5 text-white flex items-center justify-between">
+                 <div className="flex items-center gap-2">
+                    <ShieldAlert className="w-5 h-5 text-amber-100" />
+                    <h3 className="font-bold text-sm tracking-wide">THÔNG BÁO VĂN BẢN ĐÃ KÝ SỐ</h3>
+                 </div>
+                 <button 
+                   onClick={() => setShowSignedWarningModal(false)}
+                   className="text-amber-100 hover:text-white p-1 rounded hover:bg-amber-600 transition-colors"
+                 >
+                   <X className="w-4 h-4" />
+                 </button>
+              </div>
+
+              <div className="p-5 flex flex-col gap-3.5">
+                 <div className="flex items-start gap-3 bg-amber-50 p-3 rounded-lg border border-amber-200/70">
+                    <Lock className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                    <div className="text-xs text-amber-900 leading-relaxed">
+                       <p className="font-semibold mb-1">Chế độ xem chỉ đọc (Read-Only Mode):</p>
+                       <p>Văn bản này chứa <b>chữ ký số hợp lệ</b>. Nhằm bảo toàn tính pháp lý và toàn vẹn của chữ ký số điện tử, hệ thống đã tự động <b>khóa toàn bộ các tính năng chỉnh sửa</b> (thêm chữ, sửa chữ gốc, vẽ highlight, thêm trường ký, chèn, xóa hoặc xoay trang).</p>
+                    </div>
+                 </div>
+
+                 <p className="text-xs text-gray-600 italic">
+                    Bạn vẫn có thể xem tài liệu, phóng to/thu nhỏ, điều hướng các trang và tải/xuất file một cách an toàn.
+                 </p>
+
+                 <div className="pt-2 flex justify-end">
+                    <button
+                       type="button"
+                       onClick={() => setShowSignedWarningModal(false)}
+                       className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-lg shadow-sm transition-colors flex items-center gap-1.5"
+                    >
+                       <Check className="w-4 h-4" />
+                       Đã hiểu và tiếp tục xem
+                    </button>
+                 </div>
               </div>
            </div>
         </div>
@@ -3536,15 +3787,12 @@ export default function App() {
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500"></span>
              </span>
-             <span>⚠️ <b>CẢNH BÁO CHỮ KÝ SỐ (Digital Signature detected):</b> Tài liệu này đã được ký số hợp lệ. Việc thêm/chỉnh sửa trường ký hoặc thay đổi cấu trúc trang (thêm, xóa, di chuyển trang) đã được khóa tự động để bảo toàn chữ ký điện tử gốc.</span>
+             <span>⚠️ <b>CẢNH BÁO VĂN BẢN ĐÃ KÝ SỐ (CHẾ ĐỘ CHỈ ĐỌC):</b> Tài liệu này đã có chữ ký số hợp lệ. Toàn bộ tính năng chỉnh sửa (thêm chữ, sửa chữ gốc, highlight, thêm trường ký, chèn/xóa/xoay trang) đã được khóa để bảo toàn nguyên vẹn chữ ký số.</span>
           </div>
-          <button 
-             onClick={() => setIsDigitallySigned(false)} 
-             className="text-amber-600 hover:text-amber-800 font-bold ml-4 border border-amber-300 hover:border-amber-400 px-2 py-1 rounded bg-white shadow-xs transition-colors text-xs"
-             title="Tạm thời tắt cảnh báo này"
-          >
-             Bỏ qua cảnh báo
-          </button>
+          <div className="flex items-center gap-1.5 bg-amber-100/80 text-amber-900 px-2.5 py-1 rounded-md text-[11px] font-bold border border-amber-300">
+             <Lock className="w-3.5 h-3.5 text-amber-700" />
+             Chỉ đọc (Read-only)
+          </div>
         </div>
       )}
 
@@ -3561,13 +3809,24 @@ export default function App() {
              <span className="text-[10px] font-medium leading-[1.1] text-center text-gray-700 z-10">Nhập PDF</span>
            </button>
            <button 
-             onClick={() => appendFileInputRef.current?.click()}
-             className="flex flex-col items-center justify-start w-[68px] h-[68px] rounded-lg border border-transparent hover:bg-white hover:border-indigo-200 hover:shadow-sm p-1 pt-1.5 gap-1 transition-all relative overflow-hidden group"
-             title="Thêm các trang từ file PDF khác vào cuối tài liệu này"
+             onClick={() => {
+               if (isDigitallySigned) {
+                 alert("Tài liệu hiện tại đã được ký số. Không thể ghép thêm trang để tránh làm hỏng chữ ký số.");
+                 return;
+               }
+               appendFileInputRef.current?.click();
+             }}
+             disabled={isDigitallySigned}
+             className={`flex flex-col items-center justify-start w-[68px] h-[68px] rounded-lg border ${
+               isDigitallySigned 
+                 ? 'opacity-40 cursor-not-allowed border-transparent bg-gray-50' 
+                 : 'border-transparent hover:bg-white hover:border-indigo-200 hover:shadow-sm'
+             } p-1 pt-1.5 gap-1 transition-all relative overflow-hidden group`}
+             title={isDigitallySigned ? "Đã khóa do tài liệu đã ký số" : "Thêm các trang từ file PDF khác vào cuối tài liệu này"}
            >
-             <div className="absolute inset-0 bg-indigo-50 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-             <FilePlus className="w-6 h-6 text-indigo-600 z-10 drop-shadow-sm" strokeWidth={1.5} />
-             <span className="text-[10px] font-medium leading-[1.1] text-center text-gray-700 z-10">Thêm trang<br/>ở cuối</span>
+             {!isDigitallySigned && <div className="absolute inset-0 bg-indigo-50 opacity-0 group-hover:opacity-100 transition-opacity"></div>}
+             <FilePlus className={`w-6 h-6 z-10 drop-shadow-sm ${isDigitallySigned ? 'text-gray-400' : 'text-indigo-600'}`} strokeWidth={1.5} />
+             <span className={`text-[10px] font-medium leading-[1.1] text-center z-10 ${isDigitallySigned ? 'text-gray-400' : 'text-gray-700'}`}>Thêm trang<br/>ở cuối</span>
            </button>
            <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-indigo-800/60 uppercase tracking-wider font-semibold">Tài liệu</div>
         </div>
@@ -3587,13 +3846,27 @@ export default function App() {
               icon={PenSquare} 
               label={"Trường\nchữ ký"} 
               active={activeTool === 'Signature Field'} 
-              onClick={() => setActiveTool('Signature Field')}
+              disabled={isDigitallySigned}
+              title={isDigitallySigned ? "Không thể thêm trường ký vì tài liệu đã được ký số" : "Thêm ô ký số"}
+              onClick={() => {
+                if (isDigitallySigned) {
+                  alert("Tài liệu hiện tại đã được ký số. Không thể thêm trường ký mới.");
+                  return;
+                }
+                setActiveTool('Signature Field');
+              }}
            />
            <RibbonButton 
               icon={Type} 
               label={"Thêm chữ\n(Text box)"} 
               active={activeTool === 'Text Box'} 
+              disabled={isDigitallySigned}
+              title={isDigitallySigned ? "Không thể thêm văn bản vì tài liệu đã được ký số" : "Chèn khung văn bản mới"}
               onClick={() => {
+                if (isDigitallySigned) {
+                  alert("Tài liệu hiện tại đã được ký số. Không thể thêm khung chữ mới.");
+                  return;
+                }
                 setActiveTool('Text Box');
                 setSelectedFieldId(null);
                 setSelectedTextId(null);
@@ -3605,13 +3878,27 @@ export default function App() {
               icon={Edit} 
               label={"Sửa chữ\ngốc"} 
               active={activeTool === 'Edit Text'} 
-              onClick={() => setActiveTool('Edit Text')}
+              disabled={isDigitallySigned}
+              title={isDigitallySigned ? "Không thể sửa chữ gốc vì tài liệu đã được ký số" : "Sửa trực tiếp các dòng chữ trong file PDF"}
+              onClick={() => {
+                if (isDigitallySigned) {
+                  alert("Tài liệu hiện tại đã được ký số. Không thể sửa nội dung chữ gốc.");
+                  return;
+                }
+                setActiveTool('Edit Text');
+              }}
            />
            <RibbonButton 
               icon={Highlighter} 
               label={"Tô sáng\n(Highlight)"} 
               active={activeTool === 'Highlight'} 
+              disabled={isDigitallySigned}
+              title={isDigitallySigned ? "Không thể tô sáng/xóa nền vì tài liệu đã được ký số" : "Tô sáng văn bản hoặc che nền trắng"}
               onClick={() => {
+                if (isDigitallySigned) {
+                  alert("Tài liệu hiện tại đã được ký số. Không thể tô sáng hoặc che nền.");
+                  return;
+                }
                 setActiveTool('Highlight');
                 setSelectedFieldId(null);
                 setSelectedTextId(null);
@@ -4634,6 +4921,7 @@ export default function App() {
               setSelectedTextId(null);
             }}
             onMouseDown={(e) => {
+              if (isDigitallySigned) return;
               e.stopPropagation();
               setSelectedHighlightId(h.id);
               setSelectedFieldId(null);
@@ -4720,7 +5008,7 @@ export default function App() {
             )}
 
             {/* Resizing handle on right edge */}
-            {isSelected && (
+            {isSelected && !isDigitallySigned && (
               <div
                 onMouseDown={(e) => {
                   e.stopPropagation();
@@ -4750,7 +5038,7 @@ export default function App() {
             )}
 
             {/* Resizing handle on bottom-right corner */}
-            {isSelected && (
+            {isSelected && !isDigitallySigned && (
               <div
                 onMouseDown={(e) => {
                   e.stopPropagation();
@@ -4780,20 +5068,22 @@ export default function App() {
             )}
 
             {/* Quick floating delete button */}
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setHighlights(prev => prev.filter(item => item.id !== h.id));
-                if (selectedHighlightId === h.id) setSelectedHighlightId(null);
-              }}
-              className={`absolute -top-3.5 -right-3.5 w-6 h-6 bg-red-600 hover:bg-red-700 text-white rounded-full flex items-center justify-center shadow-lg transition-all z-40 cursor-pointer ${
-                isSelected ? 'opacity-100 scale-100' : 'opacity-0 group-hover:opacity-100 scale-90 hover:scale-100'
-              }`}
-              title="Xóa khung này"
-            >
-              <Trash2 className="w-3.5 h-3.5 stroke-[2.5]" />
-            </button>
+            {!isDigitallySigned && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setHighlights(prev => prev.filter(item => item.id !== h.id));
+                  if (selectedHighlightId === h.id) setSelectedHighlightId(null);
+                }}
+                className={`absolute -top-3.5 -right-3.5 w-6 h-6 bg-red-600 hover:bg-red-700 text-white rounded-full flex items-center justify-center shadow-lg transition-all z-40 cursor-pointer ${
+                  isSelected ? 'opacity-100 scale-100' : 'opacity-0 group-hover:opacity-100 scale-90 hover:scale-100'
+                }`}
+                title="Xóa khung này"
+              >
+                <Trash2 className="w-3.5 h-3.5 stroke-[2.5]" />
+              </button>
+            )}
           </div>
         );
       });
@@ -4827,12 +5117,16 @@ export default function App() {
               setTbHasBorder(!!tb.hasBorder);
             }}
             onDoubleClick={(e) => {
+              if (isDigitallySigned) {
+                alert("Tài liệu hiện tại đã được ký số. Không thể chỉnh sửa ô chữ.");
+                return;
+              }
               e.stopPropagation();
               setSelectedTextBoxId(tb.id);
               setEditingTextBoxId(tb.id);
             }}
             onMouseDown={(e) => {
-              if (isEditing) return;
+              if (isEditing || isDigitallySigned) return;
               e.stopPropagation();
               setSelectedTextBoxId(tb.id);
               setSelectedFieldId(null);
@@ -4908,7 +5202,7 @@ export default function App() {
             )}
 
             {/* Selection indicators & 8 Resize Handles */}
-            {isSelected && !isEditing && (
+            {isSelected && !isEditing && !isDigitallySigned && (
               <>
                 {/* Top-left handle */}
                 <div
@@ -5005,6 +5299,7 @@ export default function App() {
            className={`absolute group ${borderClass} ${bgClass} ${activeTool === 'Select' ? 'cursor-move' : 'cursor-pointer'} rounded transition-all duration-150`}
            style={{ left: f.x, top: f.y, width: f.width, height: f.height }}
            onMouseDown={(e) => {
+              if (isDigitallySigned) return;
               e.stopPropagation();
               setSelectedFieldId(f.id);
               if (activeTool === 'Select') {
@@ -5075,7 +5370,7 @@ export default function App() {
              </div>
              
              {/* Corner Handles for resizing */}
-             {isSelected && activeTool === 'Select' && (
+             {isSelected && activeTool === 'Select' && !isDigitallySigned && (
                  <>
                      <div onMouseDown={(e) => handleResizeDown(e, f, 'nw')} className={`absolute top-0 left-0 w-1.5 h-1.5 ${activeColorClass} transform -translate-x-1/2 -translate-y-1/2 cursor-nwse-resize border border-white rounded-full z-10`}></div>
                      <div onMouseDown={(e) => handleResizeDown(e, f, 'n')} className={`absolute top-0 left-1/2 w-1.5 h-1.5 ${activeColorClass} transform -translate-x-1/2 -translate-y-1/2 cursor-ns-resize border border-white rounded-full z-10`}></div>
@@ -5091,16 +5386,18 @@ export default function App() {
              )}
 
              {/* Delete Action Button */}
-             <button 
-               onClick={(e) => { e.stopPropagation(); deleteField(f.id); }}
-               className="absolute -top-2 -right-2 bg-white text-red-600 border border-red-200 rounded-full w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-50 hover:text-red-700 cursor-pointer shadow z-20 transition-all duration-150"
-               title={isText ? "Xóa trường văn bản" : "Xóa trường chữ ký"}
-             >
-                 <X className="w-3 h-3 stroke-[2.5]" />
-             </button>
+             {!isDigitallySigned && (
+               <button 
+                 onClick={(e) => { e.stopPropagation(); deleteField(f.id); }}
+                 className="absolute -top-2 -right-2 bg-white text-red-600 border border-red-200 rounded-full w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-50 hover:text-red-700 cursor-pointer shadow z-20 transition-all duration-150"
+                 title={isText ? "Xóa trường văn bản" : "Xóa trường chữ ký"}
+               >
+                   <X className="w-3 h-3 stroke-[2.5]" />
+               </button>
+             )}
              
              {/* Properties Popup Wrapper - chỉ hiển thị cho trường văn bản */}
-             {isSelected && activeTool === 'Select' && isText && (
+             {isSelected && activeTool === 'Select' && isText && !isDigitallySigned && (
                  <div className="absolute left-0 top-[calc(100%+4px)] bg-white border border-gray-200 rounded-md p-2.5 shadow-lg z-50 text-[11px] font-sans text-gray-800 cursor-default w-[220px]"
                   onMouseDown={(e) => e.stopPropagation()}
                  >
@@ -5198,6 +5495,10 @@ export default function App() {
   }
 
   function handleSelectText(t: PdfTextItem) {
+    if (isDigitallySigned) {
+      alert("Tài liệu hiện tại đã được ký số. Không thể sửa nội dung chữ gốc.");
+      return;
+    }
     setSelectedTextId(t.id);
     setEditingTextId(t.id);
     ensureFontsLoaded();
@@ -5402,7 +5703,7 @@ export default function App() {
             <span className="block px-0 select-none whitespace-pre-wrap">{t.text}</span>
 
             {/* Selection indicators & floating action pill */}
-            {isSelected && (
+            {isSelected && !isDigitallySigned && (
               <>
                 {/* 8 anchor points */}
                 <div className="absolute -top-1 -left-1 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
@@ -5445,7 +5746,7 @@ export default function App() {
               </>
             )}
 
-            {!isSelected && (
+            {!isSelected && !isDigitallySigned && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -5462,16 +5763,24 @@ export default function App() {
       });
   }
 
-  function RibbonButton({ icon: Icon, label, active, onClick, className = '' }: any) {
+  function RibbonButton({ icon: Icon, label, active, onClick, className = '', disabled = false, title }: any) {
     const lines = label.split('\n');
     return (
       <button 
         onClick={onClick}
-        className={`flex flex-col items-center justify-start w-[68px] h-[68px] rounded-lg border ${active ? 'bg-indigo-50 border-indigo-300 shadow-inner' : 'border-transparent hover:bg-white hover:border-indigo-200 hover:shadow-sm'} p-1 pt-1.5 gap-1 transition-all relative overflow-hidden group ${className}`}
+        disabled={disabled}
+        title={title}
+        className={`flex flex-col items-center justify-start w-[68px] h-[68px] rounded-lg border ${
+          disabled 
+            ? 'opacity-40 cursor-not-allowed border-transparent bg-gray-50' 
+            : active 
+              ? 'bg-indigo-50 border-indigo-300 shadow-inner' 
+              : 'border-transparent hover:bg-white hover:border-indigo-200 hover:shadow-sm'
+        } p-1 pt-1.5 gap-1 transition-all relative overflow-hidden group ${className}`}
       >
-        {!active && <div className="absolute inset-0 bg-indigo-50 opacity-0 group-hover:opacity-100 transition-opacity z-0"></div>}
-        <Icon className={`w-6 h-6 z-10 ${active ? 'text-indigo-700 drop-shadow-sm' : 'text-gray-700 group-hover:text-indigo-600'}`} strokeWidth={1.5} />
-        <span className={`text-[10px] whitespace-normal font-medium leading-[1.1] text-center z-10 ${active ? 'text-indigo-800' : 'text-gray-700'}`}>
+        {!active && !disabled && <div className="absolute inset-0 bg-indigo-50 opacity-0 group-hover:opacity-100 transition-opacity z-0"></div>}
+        <Icon className={`w-6 h-6 z-10 ${disabled ? 'text-gray-400' : active ? 'text-indigo-700 drop-shadow-sm' : 'text-gray-700 group-hover:text-indigo-600'}`} strokeWidth={1.5} />
+        <span className={`text-[10px] whitespace-normal font-medium leading-[1.1] text-center z-10 ${disabled ? 'text-gray-400' : active ? 'text-indigo-800' : 'text-gray-700'}`}>
            {lines.map((l: string, i: number) => <React.Fragment key={i}>{l}{i < lines.length - 1 && <br/>}</React.Fragment>)}
         </span>
       </button>
