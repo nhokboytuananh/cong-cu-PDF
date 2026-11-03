@@ -6,7 +6,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { 
   PenSquare, Layout, FileDown, X, MousePointer2, FileUp, Loader2, FilePlus, Trash2, Type, ArrowUp, ArrowDown, Edit, HelpCircle, Info, CheckCircle2, MousePointerClick,
   RotateCcw, RotateCw, PanelLeft, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Bold, Italic, Check, Sparkles, Highlighter, Eraser,
-  AlignLeft, AlignCenter, AlignRight, Square, ShieldAlert, Lock
+  AlignLeft, AlignCenter, AlignRight, Square, Circle, ShieldAlert, Lock, Undo2, Redo2
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as pdfLib from 'pdf-lib';
@@ -14,7 +14,7 @@ import { PDFDocument } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import { PageThumbnailSidebar } from './components/PageThumbnailSidebar';
 import { ZoomControls } from './components/ZoomControls';
-import { HighlightItem, TextBoxItem } from './types';
+import { HighlightItem, TextBoxItem, ShapeItem } from './types';
 
 // Configure pdfjs worker url
 // @ts-ignore
@@ -263,7 +263,7 @@ export default function App() {
   const [showSignedWarningModal, setShowSignedWarningModal] = useState<boolean>(false);
 
   const [showHelpModal, setShowHelpModal] = useState<boolean>(false);
-  const [activeHelpTab, setActiveHelpTab] = useState<'document' | 'fields' | 'edit_text' | 'highlights' | 'export_overwrite'>('document');
+  const [activeHelpTab, setActiveHelpTab] = useState<'document' | 'fields' | 'edit_text' | 'highlights' | 'shapes' | 'export_overwrite'>('document');
 
   // Styling & Nudging States for PDF text edits
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
@@ -342,6 +342,213 @@ export default function App() {
     if (updates.hasBackground !== undefined) setTbHasBackground(updates.hasBackground);
     if (updates.hasBorder !== undefined) setTbHasBorder(updates.hasBorder);
   };
+
+  // Shapes state (Kẻ ô vuông & Khoanh vùng trong PDF)
+  const [shapes, setShapes] = useState<ShapeItem[]>([]);
+  const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
+  const [shapeType, setShapeType] = useState<'rectangle' | 'circle'>('rectangle');
+  const [shapeStrokeColor, setShapeStrokeColor] = useState<string>('#ef4444');
+  const [shapeStrokeWidth, setShapeStrokeWidth] = useState<number>(2);
+  const [shapeStrokeStyle, setShapeStrokeStyle] = useState<'solid' | 'dashed' | 'dotted'>('solid');
+  const [shapeFill, setShapeFill] = useState<'transparent' | 'light' | 'white'>('transparent');
+  const [shapeInteraction, setShapeInteraction] = useState<{
+    id: string;
+    type: 'drag' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+    startX: number;
+    startY: number;
+    originalX: number;
+    originalY: number;
+    originalWidth: number;
+    originalHeight: number;
+    pageIndex: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (selectedShapeId) {
+      const sh = shapes.find(s => s.id === selectedShapeId);
+      if (sh) {
+        setShapeType(sh.type);
+        setShapeStrokeColor(sh.strokeColor || '#ef4444');
+        setShapeStrokeWidth(sh.strokeWidth || 2);
+        setShapeStrokeStyle(sh.strokeStyle || 'solid');
+        setShapeFill(sh.fillColor || 'transparent');
+      }
+    }
+  }, [selectedShapeId]);
+
+  const updateCurrentShape = (updates: Partial<ShapeItem>) => {
+    if (selectedShapeId) {
+      setShapes(prev => prev.map(s => s.id === selectedShapeId ? { ...s, ...updates } : s));
+    }
+    if (updates.type !== undefined) setShapeType(updates.type);
+    if (updates.strokeColor !== undefined) setShapeStrokeColor(updates.strokeColor);
+    if (updates.strokeWidth !== undefined) setShapeStrokeWidth(updates.strokeWidth);
+    if (updates.strokeStyle !== undefined) setShapeStrokeStyle(updates.strokeStyle);
+    if (updates.fillColor !== undefined) setShapeFill(updates.fillColor);
+  };
+
+  useEffect(() => {
+    if (documentName && pages.length > 0 && !isProcessing) {
+      try {
+        localStorage.setItem(`pdf_shapes_${documentName}`, JSON.stringify(shapes));
+      } catch (e) {}
+    }
+  }, [shapes, documentName, pages.length, isProcessing]);
+
+  useEffect(() => {
+    if (documentName && pages.length > 0 && !isProcessing) {
+      try {
+        localStorage.setItem(`pdf_highlights_${documentName}`, JSON.stringify(highlights));
+      } catch (e) {}
+    }
+  }, [highlights, documentName, pages.length, isProcessing]);
+
+  // Undo / Redo History Stack for Shapes, Highlights, and TextBoxes
+  type AnnotationSnapshot = {
+    shapes: ShapeItem[];
+    highlights: HighlightItem[];
+    textBoxes: TextBoxItem[];
+    deletedTextBoxes: TextBoxItem[];
+  };
+
+  const [undoStack, setUndoStack] = useState<AnnotationSnapshot[]>([]);
+  const [redoStack, setRedoStack] = useState<AnnotationSnapshot[]>([]);
+  const committedSnapshotRef = useRef<AnnotationSnapshot>({
+    shapes: [],
+    highlights: [],
+    textBoxes: [],
+    deletedTextBoxes: [],
+  });
+  const isUndoingOrRedoingRef = useRef<boolean>(false);
+
+  const cloneSnapshot = (snap: AnnotationSnapshot): AnnotationSnapshot => ({
+    shapes: snap.shapes.map(s => ({ ...s })),
+    highlights: snap.highlights.map(h => ({ ...h })),
+    textBoxes: snap.textBoxes.map(t => ({ ...t })),
+    deletedTextBoxes: snap.deletedTextBoxes.map(d => ({ ...d })),
+  });
+
+  const isSameSnapshot = (a: AnnotationSnapshot, b: AnnotationSnapshot): boolean => {
+    if (
+      a.shapes.length !== b.shapes.length ||
+      a.highlights.length !== b.highlights.length ||
+      a.textBoxes.length !== b.textBoxes.length ||
+      a.deletedTextBoxes.length !== b.deletedTextBoxes.length
+    ) {
+      return false;
+    }
+    return JSON.stringify(a) === JSON.stringify(b);
+  };
+
+  useEffect(() => {
+    const currentSnap: AnnotationSnapshot = {
+      shapes,
+      highlights,
+      textBoxes,
+      deletedTextBoxes,
+    };
+
+    if (isProcessing) {
+      committedSnapshotRef.current = cloneSnapshot(currentSnap);
+      return;
+    }
+
+    if (isUndoingOrRedoingRef.current) {
+      isUndoingOrRedoingRef.current = false;
+      committedSnapshotRef.current = cloneSnapshot(currentSnap);
+      return;
+    }
+
+    // Defer history commit while user is actively dragging or resizing
+    if (shapeInteraction !== null || highlightInteraction !== null || textBoxInteraction !== null) {
+      return;
+    }
+
+    if (isSameSnapshot(committedSnapshotRef.current, currentSnap)) {
+      return;
+    }
+
+    // Debounce commit while typing inside a TextBox so typing a phrase is one undo step
+    if (editingTextBoxId !== null) {
+      const timer = setTimeout(() => {
+        if (!isSameSnapshot(committedSnapshotRef.current, currentSnap)) {
+          const prevCommitted = cloneSnapshot(committedSnapshotRef.current);
+          setUndoStack(prev => [...prev.slice(-49), prevCommitted]);
+          setRedoStack([]);
+          committedSnapshotRef.current = cloneSnapshot(currentSnap);
+        }
+      }, 400);
+      return () => clearTimeout(timer);
+    }
+
+    const prevCommitted = cloneSnapshot(committedSnapshotRef.current);
+    setUndoStack(prev => [...prev.slice(-49), prevCommitted]);
+    setRedoStack([]);
+    committedSnapshotRef.current = cloneSnapshot(currentSnap);
+  }, [shapes, highlights, textBoxes, deletedTextBoxes, shapeInteraction, highlightInteraction, textBoxInteraction, editingTextBoxId, isProcessing]);
+
+  const applyAnnotationSnapshot = (snap: AnnotationSnapshot) => {
+    isUndoingOrRedoingRef.current = true;
+    committedSnapshotRef.current = cloneSnapshot(snap);
+    setShapes(snap.shapes.map(s => ({ ...s })));
+    setHighlights(snap.highlights.map(h => ({ ...h })));
+    setTextBoxes(snap.textBoxes.map(t => ({ ...t })));
+    setDeletedTextBoxes(snap.deletedTextBoxes.map(d => ({ ...d })));
+
+    if (selectedShapeId && !snap.shapes.some(s => s.id === selectedShapeId)) {
+      setSelectedShapeId(null);
+    }
+    if (selectedHighlightId && !snap.highlights.some(h => h.id === selectedHighlightId)) {
+      setSelectedHighlightId(null);
+    }
+    if (selectedTextBoxId && !snap.textBoxes.some(t => t.id === selectedTextBoxId)) {
+      setSelectedTextBoxId(null);
+      setEditingTextBoxId(null);
+    }
+  };
+
+  const handleUndo = () => {
+    if (isDigitallySigned || isProcessing) return;
+    const currentSnap: AnnotationSnapshot = {
+      shapes,
+      highlights,
+      textBoxes,
+      deletedTextBoxes,
+    };
+
+    if (!isSameSnapshot(committedSnapshotRef.current, currentSnap)) {
+      const target = cloneSnapshot(committedSnapshotRef.current);
+      setRedoStack(prev => [...prev.slice(-49), cloneSnapshot(currentSnap)]);
+      applyAnnotationSnapshot(target);
+      return;
+    }
+
+    if (undoStack.length === 0) return;
+    const target = undoStack[undoStack.length - 1];
+    setUndoStack(prev => prev.slice(0, -1));
+    setRedoStack(prev => [...prev.slice(-49), cloneSnapshot(currentSnap)]);
+    applyAnnotationSnapshot(target);
+  };
+
+  const handleRedo = () => {
+    if (isDigitallySigned || isProcessing || redoStack.length === 0) return;
+    const currentSnap: AnnotationSnapshot = {
+      shapes,
+      highlights,
+      textBoxes,
+      deletedTextBoxes,
+    };
+    const target = redoStack[redoStack.length - 1];
+    setRedoStack(prev => prev.slice(0, -1));
+    setUndoStack(prev => [...prev.slice(-49), cloneSnapshot(currentSnap)]);
+    applyAnnotationSnapshot(target);
+  };
+
+  const canUndo = !isDigitallySigned && (
+    undoStack.length > 0 ||
+    !isSameSnapshot(committedSnapshotRef.current, { shapes, highlights, textBoxes, deletedTextBoxes })
+  );
+  const canRedo = !isDigitallySigned && redoStack.length > 0;
 
   // Lazy-loaded high-quality Vietnamese fonts
   const [fontSerifRegular, setFontSerifRegular] = useState<Uint8Array | null>(null);
@@ -474,6 +681,24 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        const activeTag = document.activeElement?.tagName ? document.activeElement.tagName.toLowerCase() : '';
+        if (activeTag === 'input' || activeTag === 'select' || (activeTag === 'textarea' && editingTextId)) {
+          return;
+        }
+        const keyLower = e.key.toLowerCase();
+        if (keyLower === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          handleUndo();
+          return;
+        }
+        if (keyLower === 'y' || (keyLower === 'z' && e.shiftKey)) {
+          e.preventDefault();
+          handleRedo();
+          return;
+        }
+      }
+
       if (e.key === 'Escape') {
         setActiveTool('Select');
         setSelectedFieldId(null);
@@ -481,10 +706,15 @@ export default function App() {
         setSelectedHighlightId(null);
         setSelectedTextBoxId(null);
         setEditingTextBoxId(null);
+        setSelectedShapeId(null);
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && !editingTextId && !editingTextBoxId) {
         const activeTag = document.activeElement?.tagName ? document.activeElement.tagName.toLowerCase() : '';
         if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') return;
-        if (selectedTextBoxId) {
+        if (selectedShapeId) {
+          e.preventDefault();
+          setShapes(prev => prev.filter(s => s.id !== selectedShapeId));
+          setSelectedShapeId(null);
+        } else if (selectedTextBoxId) {
           e.preventDefault();
           const deletedItem = textBoxes.find(tb => tb.id === selectedTextBoxId);
           if (deletedItem && initialLoadedTextBoxesRef.current.some(itb => itb.id === deletedItem.id)) {
@@ -501,13 +731,28 @@ export default function App() {
           deleteField(selectedFieldId);
           setSelectedFieldId(null);
         }
+      } else if (selectedShapeId && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        const activeTag = document.activeElement?.tagName ? document.activeElement.tagName.toLowerCase() : '';
+        if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') return;
+        e.preventDefault();
+        const delta = e.shiftKey ? 5 : 1;
+        setShapes(prev => prev.map(s => {
+          if (s.id !== selectedShapeId) return s;
+          let dx = 0;
+          let dy = 0;
+          if (e.key === 'ArrowUp') dy = -delta;
+          if (e.key === 'ArrowDown') dy = delta;
+          if (e.key === 'ArrowLeft') dx = -delta;
+          if (e.key === 'ArrowRight') dx = delta;
+          return { ...s, x: Math.max(0, s.x + dx), y: Math.max(0, s.y + dy) };
+        }));
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [editingTextId, editingTextBoxId, selectedHighlightId, selectedFieldId, selectedTextBoxId, textBoxes]);
+  }, [editingTextId, editingTextBoxId, selectedHighlightId, selectedFieldId, selectedTextBoxId, selectedShapeId, textBoxes, shapes, highlights, deletedTextBoxes, undoStack, redoStack, isDigitallySigned, isProcessing]);
 
   useEffect(() => {
     if (documentName && documentName !== 'Bản nháp') {
@@ -740,6 +985,38 @@ export default function App() {
             };
           }
           return f;
+        }));
+
+        setShapes(prev => prev.map(sh => {
+          if (!indices.includes(sh.pageIndex)) return sh;
+          const p = pages[sh.pageIndex];
+          if (!p) return sh;
+          const W = p.width;
+          const H = p.height;
+          if (normDelta === 90) {
+            return {
+              ...sh,
+              x: H - (sh.y + sh.height),
+              y: sh.x,
+              width: sh.height,
+              height: sh.width,
+            };
+          } else if (normDelta === 270) {
+            return {
+              ...sh,
+              x: sh.y,
+              y: W - (sh.x + sh.width),
+              width: sh.height,
+              height: sh.width,
+            };
+          } else if (normDelta === 180) {
+            return {
+              ...sh,
+              x: W - (sh.x + sh.width),
+              y: H - (sh.y + sh.height),
+            };
+          }
+          return sh;
         }));
       }
 
@@ -1350,6 +1627,16 @@ export default function App() {
 
       if (pageAnnots && Array.isArray(pageAnnots)) {
         pageAnnots.forEach((annot: any) => {
+          if (annot.subtype === 'Square' || annot.subtype === 'Circle') {
+            if (annot.id) {
+              try {
+                // Set noView: true in pdf.annotationStorage so pdfjs skips baking shapes into canvas bitmap
+                (pdf as any).annotationStorage?.setValue(annot.id, { noView: true });
+              } catch (e) {
+                // ignore
+              }
+            }
+          }
           if (annot.subtype === 'Highlight') {
             if (annot.id) {
               try {
@@ -1771,6 +2058,154 @@ export default function App() {
     return result;
   };
 
+  const extractShapesFromPdf = (pdfDoc: PDFDocument, parsedPages: PdfPage[]): ShapeItem[] => {
+    const result: ShapeItem[] = [];
+    try {
+      const docPages = pdfDoc.getPages();
+      for (let pIdx = 0; pIdx < docPages.length; pIdx++) {
+        const page = docPages[pIdx];
+        const parsedPage = parsedPages[pIdx];
+        if (!parsedPage) continue;
+        const { width, height } = page.getSize();
+        let boxX = 0;
+        let boxY = 0;
+        let visibleWidth = width;
+        let visibleHeight = height;
+        try {
+          const cropBox = page.getCropBox();
+          if (cropBox) {
+            boxX = cropBox.x || 0;
+            boxY = cropBox.y || 0;
+            visibleWidth = cropBox.width;
+            visibleHeight = cropBox.height;
+          }
+        } catch (e) {}
+
+        let angle = 0;
+        try {
+          const rot = page.getRotation();
+          if (rot && typeof rot.angle === 'number') {
+            angle = rot.angle;
+          } else if (typeof rot === 'number') {
+            angle = rot;
+          }
+        } catch (e) {}
+        angle = (angle % 360 + 360) % 360;
+
+        const annots = page.node.lookup(pdfLib.PDFName.of('Annots'));
+        if (annots && typeof (annots as any).size === 'function') {
+          const annotCount = (annots as any).size();
+          for (let aIdx = 0; aIdx < annotCount; aIdx++) {
+            const annot = (annots as any).lookup(aIdx);
+            if (!annot) continue;
+            const subtype = annot.lookup(pdfLib.PDFName.of('Subtype'))?.toString();
+            if (subtype === '/Square' || subtype === '/Circle') {
+              // 1. Check CustomMeta first for exact ShapeItem state
+              const customMeta = annot.lookup(pdfLib.PDFName.of('CustomMeta'));
+              if (customMeta) {
+                try {
+                  const rawStr = typeof (customMeta as any).decodeText === 'function'
+                    ? (customMeta as any).decodeText()
+                    : typeof (customMeta as any).asString === 'function'
+                    ? (customMeta as any).asString()
+                    : '';
+                  if (rawStr) {
+                    const decoded = rawStr.startsWith('%') || rawStr.includes('%7B') ? decodeURIComponent(rawStr) : rawStr;
+                    const metaParsed = JSON.parse(decoded);
+                    if (metaParsed && typeof metaParsed.x === 'number') {
+                      result.push({
+                        ...metaParsed,
+                        pageIndex: pIdx,
+                        id: metaParsed.id || `shape-pdf-${pIdx}-${aIdx}-${Math.random().toString(36).substring(2, 7)}`,
+                      });
+                      continue;
+                    }
+                  }
+                } catch (e) {}
+              }
+
+              // 2. Fallback: extract from standard PDF /Square or /Circle annotation properties
+              const rectObj = annot.lookup(pdfLib.PDFName.of('Rect'));
+              if (rectObj && typeof (rectObj as any).asArray === 'function') {
+                const coords = (rectObj as any).asArray().map((v: any) => typeof v.asNumber === 'function' ? v.asNumber() : Number(v));
+                if (coords.length >= 4) {
+                  const rectX = Math.min(coords[0], coords[2]);
+                  const rectY = Math.min(coords[1], coords[3]);
+                  const rectW = Math.abs(coords[2] - coords[0]);
+                  const rectH = Math.abs(coords[3] - coords[1]);
+
+                  const canvasWidth = parsedPage.width;
+                  const canvasHeight = parsedPage.height;
+                  let x = 0, y = 0, widthVal = 0, heightVal = 0;
+
+                  if (angle === 90) {
+                    const scaleX = visibleHeight / canvasWidth;
+                    const scaleY = visibleWidth / canvasHeight;
+                    widthVal = rectH / scaleX;
+                    heightVal = rectW / scaleY;
+                    y = (rectX - boxX) / scaleY;
+                    x = (rectY - boxY) / scaleX;
+                  } else if (angle === 180) {
+                    const scaleX = visibleWidth / canvasWidth;
+                    const scaleY = visibleHeight / canvasHeight;
+                    widthVal = rectW / scaleX;
+                    heightVal = rectH / scaleY;
+                    y = (rectY - boxY) / scaleY;
+                    x = (visibleWidth - (rectX - boxX)) / scaleX - widthVal;
+                  } else if (angle === 270) {
+                    const scaleX = visibleHeight / canvasWidth;
+                    const scaleY = visibleWidth / canvasHeight;
+                    widthVal = rectH / scaleX;
+                    heightVal = rectW / scaleY;
+                    y = (visibleWidth - (rectX - boxX)) / scaleY - heightVal;
+                    x = (visibleHeight - (rectY - boxY)) / scaleX - widthVal;
+                  } else {
+                    const scaleX = visibleWidth / canvasWidth;
+                    const scaleY = visibleHeight / canvasHeight;
+                    widthVal = rectW / scaleX;
+                    heightVal = rectH / scaleY;
+                    x = (rectX - boxX) / scaleX;
+                    y = (visibleHeight - (rectY - boxY + rectH)) / scaleY;
+                  }
+
+                  let strokeColorHex = '#ef4444';
+                  const colorObj = annot.lookup(pdfLib.PDFName.of('C'));
+                  if (colorObj && typeof (colorObj as any).asArray === 'function') {
+                    const rgbVals = (colorObj as any).asArray().map((v: any) => typeof v.asNumber === 'function' ? v.asNumber() : Number(v));
+                    if (rgbVals.length >= 3) {
+                      const r = Math.round(rgbVals[0] * 255).toString(16).padStart(2, '0');
+                      const g = Math.round(rgbVals[1] * 255).toString(16).padStart(2, '0');
+                      const b = Math.round(rgbVals[2] * 255).toString(16).padStart(2, '0');
+                      strokeColorHex = `#${r}${g}${b}`;
+                    }
+                  }
+
+                  result.push({
+                    id: `shape-pdf-${pIdx}-${aIdx}-${Math.random().toString(36).substring(2, 7)}`,
+                    pageIndex: pIdx,
+                    type: subtype === '/Circle' ? 'circle' : 'rectangle',
+                    x: Math.round(x),
+                    y: Math.round(y),
+                    width: Math.max(12, Math.round(widthVal)),
+                    height: Math.max(12, Math.round(heightVal)),
+                    strokeColor: strokeColorHex,
+                    strokeWidth: 2,
+                    strokeStyle: 'solid',
+                    fillColor: 'transparent',
+                    opacity: 1,
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Could not extract native shape annotations:", err);
+    }
+    return result;
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1779,9 +2214,13 @@ export default function App() {
     setDocumentName(file.name);
     setHighlights([]);
     setSelectedHighlightId(null);
+    setShapes([]);
+    setSelectedShapeId(null);
     setTextBoxes([]);
     setSelectedTextBoxId(null);
     setEditingTextBoxId(null);
+    setUndoStack([]);
+    setRedoStack([]);
     try {
       const arrayBuffer = await file.arrayBuffer();
       const uint8Array = new Uint8Array(arrayBuffer);
@@ -1796,8 +2235,10 @@ export default function App() {
       
       const parsedPages = await renderPdfPages(uint8Array);
 
-      // Restore saved highlights from embedded PDF metadata, native PDF Annotations, or localStorage
+      // Restore saved highlights & shapes from embedded PDF metadata, native PDF Annotations, or localStorage
       let loadedHighlights: HighlightItem[] = [];
+      let loadedShapes: ShapeItem[] = [];
+      let hasEmbeddedShapesMeta = false;
       try {
         const loadedPdfDoc = await PDFDocument.load(uint8Array, { ignoreEncryption: true });
         const subject = loadedPdfDoc.getSubject();
@@ -1806,6 +2247,10 @@ export default function App() {
             const parsedMeta = JSON.parse(subject);
             if (Array.isArray(parsedMeta.highlights) && parsedMeta.highlights.length > 0) {
               loadedHighlights = parsedMeta.highlights;
+            }
+            if (Array.isArray(parsedMeta.shapes)) {
+              loadedShapes = parsedMeta.shapes;
+              hasEmbeddedShapesMeta = true;
             }
           } catch (e) {
             // ignore
@@ -1818,7 +2263,6 @@ export default function App() {
           if (loadedHighlights.length === 0) {
             loadedHighlights = nativeHighlights;
           } else {
-            // Merge any native annotations that are not already in loadedHighlights
             for (const nh of nativeHighlights) {
               const alreadyExists = loadedHighlights.some(lh => 
                 lh.pageIndex === nh.pageIndex &&
@@ -1827,6 +2271,25 @@ export default function App() {
               );
               if (!alreadyExists) {
                 loadedHighlights.push(nh);
+              }
+            }
+          }
+        }
+
+        // Also extract any native /Square and /Circle annotations from the PDF
+        const nativeShapes = extractShapesFromPdf(loadedPdfDoc, parsedPages);
+        if (nativeShapes.length > 0) {
+          if (loadedShapes.length === 0) {
+            loadedShapes = nativeShapes;
+          } else {
+            for (const ns of nativeShapes) {
+              const alreadyExists = loadedShapes.some(ls =>
+                ls.pageIndex === ns.pageIndex &&
+                Math.abs(ls.x - ns.x) < 8 &&
+                Math.abs(ls.y - ns.y) < 8
+              );
+              if (!alreadyExists) {
+                loadedShapes.push(ns);
               }
             }
           }
@@ -1852,6 +2315,21 @@ export default function App() {
       if (loadedHighlights.length > 0) {
         setHighlights(loadedHighlights);
       }
+
+      // Check localStorage for shapes fallback if PDF didn't already embed shape metadata
+      if (loadedShapes.length === 0 && !hasEmbeddedShapesMeta) {
+        try {
+          const cachedShapes = localStorage.getItem(`pdf_shapes_${file.name}`);
+          if (cachedShapes) {
+            const parsedSh = JSON.parse(cachedShapes);
+            if (Array.isArray(parsedSh) && parsedSh.length > 0) {
+              loadedShapes = parsedSh;
+            }
+          }
+        } catch (e) {}
+      }
+
+      setShapes(loadedShapes);
 
       // Do not re-inject text boxes when opening a file because text is already written directly into the PDF
       setTextBoxes([]);
@@ -1954,6 +2432,14 @@ export default function App() {
          }
          return h;
       }));
+
+      // Update shapes page index
+      setShapes(shapes.filter(s => s.pageIndex !== deletePageConfirm.index).map(s => {
+         if (s.pageIndex > deletePageConfirm.index) {
+            return { ...s, pageIndex: s.pageIndex - 1 };
+         }
+         return s;
+      }));
       
       await renderPdfPages(newPdfBytes);
       setDeletePageConfirm(null);
@@ -2008,6 +2494,13 @@ export default function App() {
             return { ...h, pageIndex: h.pageIndex + numInserted };
          }
          return h;
+      }));
+
+      setShapes(shapes.map(s => {
+         if (s.pageIndex >= insertTargetIndex) {
+            return { ...s, pageIndex: s.pageIndex + numInserted };
+         }
+         return s;
       }));
 
       await renderPdfPages(newPdfBytes);
@@ -2087,6 +2580,16 @@ export default function App() {
           return { ...h, pageIndex: index };
         }
         return h;
+      }));
+
+      // Update shapes:
+      setShapes(shapes.map(s => {
+        if (s.pageIndex === index) {
+          return { ...s, pageIndex: targetIndex };
+        } else if (s.pageIndex === targetIndex) {
+          return { ...s, pageIndex: index };
+        }
+        return s;
       }));
 
       await renderPdfPages(newPdfBytes);
@@ -2169,6 +2672,13 @@ export default function App() {
         return h;
       }));
 
+      setShapes(shapes.map(s => {
+        if (indexMap.has(s.pageIndex)) {
+          return { ...s, pageIndex: indexMap.get(s.pageIndex)! };
+        }
+        return s;
+      }));
+
       setSelectedPageIndices([]);
       await renderPdfPages(newPdfBytes);
     } catch (error) {
@@ -2222,6 +2732,10 @@ export default function App() {
 
       setHighlights(highlights.filter(h => !indices.includes(h.pageIndex)).map(h => {
          return { ...h, pageIndex: indexMap.get(h.pageIndex)! };
+      }));
+
+      setShapes(shapes.filter(s => !indices.includes(s.pageIndex)).map(s => {
+         return { ...s, pageIndex: indexMap.get(s.pageIndex)! };
       }));
 
       setSelectedPageIndices([]);
@@ -2303,14 +2817,16 @@ export default function App() {
       setSelectedHighlightId(null);
       setSelectedTextBoxId(null);
       setEditingTextBoxId(null);
+      setSelectedShapeId(null);
       return;
     }
-    if (activeTool !== 'Signature Field' && activeTool !== 'Highlight' && activeTool !== 'Text Box') return;
+    if (activeTool !== 'Signature Field' && activeTool !== 'Highlight' && activeTool !== 'Text Box' && activeTool !== 'Rectangle' && activeTool !== 'Circle') return;
     
     setSelectedFieldId(null);
     setSelectedHighlightId(null);
     setSelectedTextBoxId(null);
     setEditingTextBoxId(null);
+    setSelectedShapeId(null);
     const pageElement = e.currentTarget as HTMLDivElement;
     const rect = pageElement.getBoundingClientRect();
     if (!rect) return;
@@ -2340,6 +2856,29 @@ export default function App() {
               pageIndex: f.pageIndex
           });
       }
+  };
+
+  const handleShapeResizeDown = (e: React.MouseEvent, sh: ShapeItem, type: 'drag' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw') => {
+    if (isDigitallySigned) return;
+    e.stopPropagation();
+    const pageElement = (e.currentTarget as HTMLElement).closest('[id^="page-"]') as HTMLDivElement;
+    if (pageElement) {
+      const rect = pageElement.getBoundingClientRect();
+      const startX = (e.clientX - rect.left) / zoom;
+      const startY = (e.clientY - rect.top) / zoom;
+      setShapeInteraction({
+        id: sh.id,
+        type,
+        startX,
+        startY,
+        originalX: sh.x,
+        originalY: sh.y,
+        originalWidth: sh.width,
+        originalHeight: sh.height,
+        pageIndex: sh.pageIndex
+      });
+      setSelectedShapeId(sh.id);
+    }
   };
 
   const handleTextBoxResizeDown = (e: React.MouseEvent, tb: TextBoxItem, type: 'drag' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw') => {
@@ -2378,8 +2917,48 @@ export default function App() {
       setTextBoxInteraction(null);
       return;
     }
+    if (shapeInteraction) {
+      setShapeInteraction(null);
+      return;
+    }
     
     if (!drawing) return;
+
+    if (activeTool === 'Rectangle' || activeTool === 'Circle') {
+      let width = Math.abs(drawing.currentX - drawing.startX);
+      let height = Math.abs(drawing.currentY - drawing.startY);
+      let x = Math.min(drawing.startX, drawing.currentX);
+      let y = Math.min(drawing.startY, drawing.currentY);
+
+      if (width < 10 || height < 10) {
+        if (activeTool === 'Circle' || shapeType === 'circle') {
+          width = 120;
+          height = 70;
+        } else {
+          width = 140;
+          height = 60;
+        }
+      }
+
+      const newId = `shape-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+      const targetType = activeTool === 'Circle' ? 'circle' : 'rectangle';
+      setShapes(prev => [...prev, {
+        id: newId,
+        pageIndex: drawing.pageIndex,
+        type: targetType,
+        x,
+        y,
+        width,
+        height,
+        strokeColor: shapeStrokeColor,
+        strokeWidth: shapeStrokeWidth,
+        strokeStyle: shapeStrokeStyle,
+        fillColor: shapeFill,
+      }]);
+      setSelectedShapeId(newId);
+      setDrawing(null);
+      return;
+    }
 
     if (activeTool === 'Text Box') {
       let width = Math.abs(drawing.currentX - drawing.startX);
@@ -3153,9 +3732,120 @@ export default function App() {
         }
       }
 
-      // Embed highlights metadata into PDF so they can be reopened and deleted later
+      // 3. Save shapes (kẻ ô vuông & khoanh vùng) as non-destructive PDF Annotations (/Square & /Circle)
+      // so they are not permanently baked into the background bitmap and can be edited/moved/deleted when reopened
+      for (let pIdx = 0; pIdx < pdfPages.length; pIdx++) {
+        const page = pdfPages[pIdx];
+        const { width, height } = page.getSize();
+        
+        let boxX = 0;
+        let boxY = 0;
+        let visibleWidth = width;
+        let visibleHeight = height;
+        try {
+          const cropBox = page.getCropBox();
+          if (cropBox) {
+            boxX = cropBox.x || 0;
+            boxY = cropBox.y || 0;
+            visibleWidth = cropBox.width;
+            visibleHeight = cropBox.height;
+          }
+        } catch (e) {}
+
+        let angle = 0;
+        try {
+          const rotVal = page.getRotation();
+          if (rotVal && typeof rotVal.angle === 'number') {
+            angle = rotVal.angle;
+          } else if (typeof rotVal === 'number') {
+            angle = rotVal;
+          }
+        } catch (e) {}
+        angle = (angle % 360 + 360) % 360;
+
+        const parsedPage = pages[pIdx];
+        if (!parsedPage) continue;
+        const canvasWidth = parsedPage.width;
+        const canvasHeight = parsedPage.height;
+
+        const { m, width: effW, height: effH } = getPageTransformMatrix(
+          [boxX, boxY, boxX + visibleWidth, boxY + visibleHeight],
+          angle
+        );
+        const scaleX = effW / canvasWidth;
+        const scaleY = effH / canvasHeight;
+
+        // Clean out any previous /Square and /Circle annotations on this page so moved/deleted shapes are updated
+        const curAnnots = page.node.lookup(pdfLib.PDFName.of('Annots'));
+        if (curAnnots && typeof (curAnnots as any).size === 'function') {
+          const remaining: any[] = [];
+          for (let aIdx = 0; aIdx < (curAnnots as any).size(); aIdx++) {
+            const annotRef = (curAnnots as any).get(aIdx);
+            const annot = (curAnnots as any).lookup(aIdx);
+            const subtype = annot?.lookup(pdfLib.PDFName.of('Subtype'))?.toString();
+            if (subtype !== '/Square' && subtype !== '/Circle') {
+              remaining.push(annotRef);
+            }
+          }
+          page.node.set(pdfLib.PDFName.of('Annots'), pdfDoc.context.obj(remaining));
+        }
+
+        const pageShapes = shapes.filter(s => s.pageIndex === pIdx);
+        for (const sh of pageShapes) {
+          const strokeRgb = hexToRgb(sh.strokeColor || '#ef4444');
+          const shBorderWidth = Math.max(1, Math.round((sh.strokeWidth || 2) * ((scaleX + scaleY) / 2)));
+
+          const tl = screenToPdfPoint(sh.x * scaleX, sh.y * scaleY, m);
+          const tr = screenToPdfPoint((sh.x + sh.width) * scaleX, sh.y * scaleY, m);
+          const blPt = screenToPdfPoint(sh.x * scaleX, (sh.y + sh.height) * scaleY, m);
+          const brPt = screenToPdfPoint((sh.x + sh.width) * scaleX, (sh.y + sh.height) * scaleY, m);
+          const minX = Math.min(tl.x, tr.x, blPt.x, brPt.x);
+          const maxX = Math.max(tl.x, tr.x, blPt.x, brPt.x);
+          const minY = Math.min(tl.y, tr.y, blPt.y, brPt.y);
+          const maxY = Math.max(tl.y, tr.y, blPt.y, brPt.y);
+
+          const annotConfig: any = {
+            Type: 'Annot',
+            Subtype: sh.type === 'circle' ? 'Circle' : 'Square',
+            Rect: [minX, minY, maxX, maxY],
+            C: [strokeRgb.red, strokeRgb.green, strokeRgb.blue],
+            CA: 1.0,
+            BS: pdfDoc.context.obj({
+              Type: 'Border',
+              W: shBorderWidth,
+              S: sh.strokeStyle === 'dashed' ? 'D' : 'S',
+              ...(sh.strokeStyle === 'dashed' ? { D: [6, 4] } : {}),
+            }),
+            Border: [0, 0, shBorderWidth],
+            F: 4,
+            CustomMeta: pdfLib.PDFString.of(encodeURIComponent(JSON.stringify(sh))),
+          };
+
+          if (sh.fillColor === 'white') {
+            annotConfig.IC = [1, 1, 1];
+          } else if (sh.fillColor === 'light') {
+            annotConfig.IC = [
+              strokeRgb.red * 0.15 + 0.85,
+              strokeRgb.green * 0.15 + 0.85,
+              strokeRgb.blue * 0.15 + 0.85,
+            ];
+          }
+
+          const annotDict = pdfDoc.context.obj(annotConfig);
+          const annotRef = pdfDoc.context.register(annotDict);
+          let pageAnnotsArr = page.node.lookup(pdfLib.PDFName.of('Annots'));
+          if (!pageAnnotsArr || typeof (pageAnnotsArr as any).push !== 'function') {
+            const newAnnots = pdfDoc.context.obj([]);
+            page.node.set(pdfLib.PDFName.of('Annots'), newAnnots);
+            pageAnnotsArr = newAnnots;
+          }
+          (pageAnnotsArr as any).push(annotRef);
+        }
+      }
+
+      // Embed highlights and shapes metadata into PDF so they can be reopened and edited later
       try {
-        pdfDoc.setSubject(JSON.stringify({ v: 2, highlights }));
+        pdfDoc.setSubject(JSON.stringify({ v: 3, highlights, shapes }));
       } catch (metaErr) {
         console.warn("Could not embed metadata:", metaErr);
       }
@@ -3176,6 +3866,9 @@ export default function App() {
         localStorage.setItem(`pdf_highlights_${downloadName}`, JSON.stringify(highlights));
         localStorage.setItem(`pdf_highlights_${rawName}`, JSON.stringify(highlights));
         localStorage.setItem(`pdf_highlights_${documentName}`, JSON.stringify(highlights));
+        localStorage.setItem(`pdf_shapes_${downloadName}`, JSON.stringify(shapes));
+        localStorage.setItem(`pdf_shapes_${rawName}`, JSON.stringify(shapes));
+        localStorage.setItem(`pdf_shapes_${documentName}`, JSON.stringify(shapes));
         localStorage.removeItem(`pdf_textboxes_${downloadName}`);
         localStorage.removeItem(`pdf_textboxes_${rawName}`);
         localStorage.removeItem(`pdf_textboxes_${documentName}`);
@@ -3348,6 +4041,58 @@ export default function App() {
             newY = Math.max(0, Math.min(pageHeight - newH, newY));
             
             return { ...tb, x: newX, y: newY, width: newW, height: newH };
+          }));
+        } else if (shapeInteraction) {
+          const pageElement = document.getElementById(`page-${shapeInteraction.pageIndex}`);
+          if (!pageElement) return;
+          const rect = pageElement.getBoundingClientRect();
+          let x = (e.clientX - rect.left) / zoom;
+          let y = (e.clientY - rect.top) / zoom;
+          
+          const dx = x - shapeInteraction.startX;
+          const dy = y - shapeInteraction.startY;
+
+          const targetPage = pages[shapeInteraction.pageIndex];
+          const pageWidth = targetPage ? targetPage.width : 800;
+          const pageHeight = targetPage ? targetPage.height : 1131;
+          
+          setShapes(prev => prev.map(sh => {
+            if (sh.id !== shapeInteraction.id) return sh;
+            
+            let newX = shapeInteraction.originalX;
+            let newY = shapeInteraction.originalY;
+            let newW = shapeInteraction.originalWidth;
+            let newH = shapeInteraction.originalHeight;
+            
+            if (shapeInteraction.type === 'drag') {
+              newX += dx;
+              newY += dy;
+            } else {
+              if (shapeInteraction.type.includes('e')) newW += dx;
+              if (shapeInteraction.type.includes('s')) newH += dy;
+              if (shapeInteraction.type.includes('w')) {
+                newX += dx;
+                newW -= dx;
+              }
+              if (shapeInteraction.type.includes('n')) {
+                newY += dy;
+                newH -= dy;
+              }
+              
+              if (newW < 15) {
+                if (shapeInteraction.type.includes('w')) newX -= (15 - newW);
+                newW = 15;
+              }
+              if (newH < 15) {
+                if (shapeInteraction.type.includes('n')) newY -= (15 - newH);
+                newH = 15;
+              }
+            }
+            
+            newX = Math.max(0, Math.min(pageWidth - newW, newX));
+            newY = Math.max(0, Math.min(pageHeight - newH, newY));
+            
+            return { ...sh, x: newX, y: newY, width: newW, height: newH };
           }));
         } else if (drawing) {
           const pageElement = document.getElementById(`page-${drawing.pageIndex}`);
@@ -3570,6 +4315,13 @@ export default function App() {
                     <span>Tô sáng (Highlight)</span>
                  </button>
                  <button 
+                    onClick={() => setActiveHelpTab('shapes')}
+                    className={`px-4 py-3 flex-1 min-w-[120px] text-center border-b-2 transition-all flex items-center justify-center gap-1.5 ${activeHelpTab === 'shapes' ? 'border-indigo-600 text-indigo-700 bg-white' : 'border-transparent text-gray-600 hover:text-gray-900 hover:bg-gray-100/50'}`}
+                 >
+                    <Square className="w-4 h-4" />
+                    <span>Kẻ ô & Khoanh vùng</span>
+                 </button>
+                 <button 
                     onClick={() => setActiveHelpTab('export_overwrite')}
                     className={`px-4 py-3 flex-1 min-w-[120px] text-center border-b-2 transition-all flex items-center justify-center gap-1.5 ${activeHelpTab === 'export_overwrite' ? 'border-indigo-600 text-indigo-700 bg-white' : 'border-transparent text-gray-600 hover:text-gray-900 hover:bg-gray-100/50'}`}
                  >
@@ -3711,6 +4463,58 @@ export default function App() {
                                    <p>• <b>Lưu & Giữ lại cho lần sau:</b> Các vùng tô sáng được tự động lưu lại trong trình duyệt và nhúng vào tệp xuất ra. Lần sau mở lên bạn hoàn toàn có thể click chọn và xóa đi dễ dàng.</p>
                                    <p>• <b>Xóa tất cả:</b> Nhấn nút <span className="bg-red-50 text-red-700 border border-red-200 px-1.5 py-0.5 rounded text-xs font-bold">Xóa hết</span> trên thanh công cụ để xóa toàn bộ các highlight đã tạo.</p>
                                 </div>
+                             </div>
+                          </li>
+                       </ul>
+                    </div>
+                 )}
+
+                 {activeHelpTab === 'shapes' && (
+                    <div className="flex flex-col gap-4">
+                       <h4 className="text-base font-bold text-red-900 flex items-center gap-2">
+                          <span className="w-1.5 h-6 bg-red-600 rounded-full" />
+                          Kẻ ô vuông, hình chữ nhật & Khoanh vùng (Tròn / Elip)
+                       </h4>
+                       <p>Công cụ kẻ khung ô và khoanh vùng giúp bạn đánh dấu, chú thích, khoanh tròn các thông tin lưu ý, ghi chú bản vẽ hoặc tạo khung nội dung rõ ràng trên trang PDF.</p>
+                       <ul className="space-y-3 pl-1">
+                          <li className="flex items-start gap-2">
+                             <div className="mt-0.5 w-5 h-5 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0 text-red-700 text-xs font-bold">1</div>
+                             <div>
+                                <strong className="text-gray-800">Chọn công cụ vẽ:</strong>
+                                <div className="mt-1 space-y-1 text-gray-600">
+                                   <p>• Bấm nút <span className="inline-flex items-center gap-0.5 bg-red-50 text-red-800 border border-red-300 px-1.5 py-0.5 rounded font-bold text-xs"><Square className="w-3.5 h-3.5 text-red-600" /> Kẻ ô vuông</span> trên thanh Ribbon để vẽ hình chữ nhật / ô vuông.</p>
+                                   <p>• Bấm nút <span className="inline-flex items-center gap-0.5 bg-rose-50 text-rose-800 border border-rose-300 px-1.5 py-0.5 rounded font-bold text-xs"><Circle className="w-3.5 h-3.5 text-rose-600" /> Khoanh vùng</span> trên thanh Ribbon để khoanh tròn / elip đánh dấu vùng cần chú ý.</p>
+                                   <p>• Sau khi chọn công cụ, nhấn giữ chuột và kéo trên trang để vẽ hình theo kích thước tùy thích.</p>
+                                </div>
+                             </div>
+                          </li>
+                          <li className="flex items-start gap-2">
+                             <div className="mt-0.5 w-5 h-5 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0 text-red-700 text-xs font-bold">2</div>
+                             <div>
+                                <strong className="text-gray-800">Tùy biến viền và nền màu:</strong>
+                                <div className="mt-1 space-y-1 text-gray-600">
+                                   <p>• <b>Kiểu hình:</b> Dễ dàng đổi qua lại giữa Hình chữ nhật ↔ Tròn / Elip bất kỳ lúc nào.</p>
+                                   <p>• <b>Màu viền & Độ dày:</b> Lựa chọn màu sắc nổi bật (Đỏ, Cam, Vàng, Xanh, Tím, Đen...) hoặc bảng màu tùy chỉnh, cùng độ dày viền từ 1px đến 6px.</p>
+                                   <p>• <b>Kiểu nét viền:</b> Chọn viền Nét liền (Solid) hoặc Nét đứt (Dashed).</p>
+                                   <p>• <b>Nền hình:</b> Trong suốt, Phủ màu mờ 15% hoặc Nền trắng để che nền bên dưới.</p>
+                                </div>
+                             </div>
+                          </li>
+                          <li className="flex items-start gap-2">
+                             <div className="mt-0.5 w-5 h-5 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0 text-red-700 text-xs font-bold">3</div>
+                             <div>
+                                <strong className="text-gray-800">Điều chỉnh kích thước & Di chuyển:</strong>
+                                <div className="mt-1 space-y-1 text-gray-600">
+                                   <p>• Click vào hình để hiển thị 8 điểm kéo (góc và cạnh) để phóng to thu nhỏ chính xác.</p>
+                                   <p>• Kéo rê hình để di chuyển đến vị trí mong muốn, hoặc dùng 4 phím mũi tên <kbd className="px-1 py-0.5 bg-gray-100 border border-gray-300 rounded font-bold text-xs">↑ ↓ ← →</kbd> để tinh chỉnh từng pixel.</p>
+                                   <p>• Bấm phím <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded font-mono text-xs text-gray-800 font-bold">Delete</kbd> hoặc nút xóa màu đỏ ở góc hình để xóa hình.</p>
+                                </div>
+                             </div>
+                          </li>
+                          <li className="flex items-start gap-2">
+                             <div className="mt-0.5 w-5 h-5 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0 text-red-700 text-xs font-bold">4</div>
+                             <div>
+                                <strong className="text-gray-800">Lưu & Mở lại chỉnh sửa linh hoạt:</strong> Các ô vuông và vùng khoanh được lưu dưới dạng lớp hiển thị thông minh (không bị in chết cứng vào nền ảnh PDF), giúp bạn mở lại file bất kỳ lúc nào để di chuyển, co giãn, đổi màu viền hoặc xóa đi dễ dàng.
                              </div>
                           </li>
                        </ul>
@@ -3902,9 +4706,71 @@ export default function App() {
                 setActiveTool('Highlight');
                 setSelectedFieldId(null);
                 setSelectedTextId(null);
+                setSelectedShapeId(null);
+              }}
+           />
+           <RibbonButton 
+              icon={Square} 
+              label={"Kẻ ô vuông\n(Khung)"} 
+              active={activeTool === 'Rectangle'} 
+              disabled={isDigitallySigned}
+              title={isDigitallySigned ? "Không thể vẽ vì tài liệu đã được ký số" : "Kẻ ô vuông hoặc khung viền chữ nhật"}
+              onClick={() => {
+                if (isDigitallySigned) {
+                  alert("Tài liệu hiện tại đã được ký số. Không thể vẽ khung mới.");
+                  return;
+                }
+                setActiveTool('Rectangle');
+                setShapeType('rectangle');
+                setSelectedFieldId(null);
+                setSelectedTextId(null);
+                setSelectedHighlightId(null);
+                setSelectedTextBoxId(null);
+              }}
+           />
+           <RibbonButton 
+              icon={Circle} 
+              label={"Khoanh vùng\n(Tròn/Elip)"} 
+              active={activeTool === 'Circle'} 
+              disabled={isDigitallySigned}
+              title={isDigitallySigned ? "Không thể vẽ vì tài liệu đã được ký số" : "Khoanh vùng hình tròn hoặc bầu dục"}
+              onClick={() => {
+                if (isDigitallySigned) {
+                  alert("Tài liệu hiện tại đã được ký số. Không thể khoanh vùng mới.");
+                  return;
+                }
+                setActiveTool('Circle');
+                setShapeType('circle');
+                setSelectedFieldId(null);
+                setSelectedTextId(null);
+                setSelectedHighlightId(null);
+                setSelectedTextBoxId(null);
               }}
            />
            <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-gray-500 uppercase tracking-wider">Công cụ</div>
+        </div>
+
+        <div className="w-px h-16 bg-gray-300"></div>
+
+        {/* History Group (Undo / Redo) */}
+        <div className="flex items-start space-x-1 relative pr-4">
+           <RibbonButton 
+              icon={Undo2} 
+              label={"Hoàn tác\n(Ctrl+Z)"} 
+              active={false}
+              disabled={!canUndo}
+              title={canUndo ? `Hoàn tác thao tác vừa thực hiện (Ctrl+Z) - Còn ${undoStack.length} bước` : "Chưa có thao tác nào để hoàn tác"}
+              onClick={handleUndo}
+           />
+           <RibbonButton 
+              icon={Redo2} 
+              label={"Làm lại\n(Ctrl+Y)"} 
+              active={false}
+              disabled={!canRedo}
+              title={canRedo ? `Làm lại thao tác vừa hoàn tác (Ctrl+Y / Ctrl+Shift+Z) - Còn ${redoStack.length} bước` : "Chưa có thao tác nào để làm lại"}
+              onClick={handleRedo}
+           />
+           <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-gray-500 uppercase tracking-wider">Lịch sử</div>
         </div>
         
         {activeTool === 'Edit Text' && (() => {
@@ -4559,6 +5425,255 @@ export default function App() {
             </>
           );
         })()}
+
+        {(activeTool === 'Rectangle' || activeTool === 'Circle' || selectedShapeId !== null) && (() => {
+          const selectedSh = shapes.find(s => s.id === selectedShapeId);
+          const currentType = selectedSh?.type || shapeType;
+          const currentColor = selectedSh?.strokeColor || shapeStrokeColor;
+          const currentWidth = selectedSh?.strokeWidth || shapeStrokeWidth;
+          const currentStyle = selectedSh?.strokeStyle || shapeStrokeStyle;
+          const currentFill = selectedSh?.fillColor || shapeFill;
+
+          const SHAPE_PRESET_COLORS = [
+            { label: 'Đỏ', color: '#ef4444' },
+            { label: 'Xanh dương', color: '#2563eb' },
+            { label: 'Đen', color: '#000000' },
+            { label: 'Xanh lá', color: '#16a34a' },
+            { label: 'Cam', color: '#f97316' },
+            { label: 'Tím', color: '#9333ea' },
+          ];
+
+          return (
+            <>
+              <div className="w-px h-16 bg-gray-300"></div>
+
+              {/* Shape Formatting Ribbon Group */}
+              <div className="flex items-center gap-2.5 bg-white/95 border border-red-300 rounded-xl px-3 py-1 h-[68px] shadow-xs relative">
+                {/* 1. Shape Switcher */}
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[9px] font-bold text-red-950 uppercase tracking-wider">Hình dạng</span>
+                  <div className="flex items-center bg-gray-100 p-0.5 rounded-lg border border-gray-300">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        updateCurrentShape({ type: 'rectangle' });
+                        if (activeTool === 'Circle') setActiveTool('Rectangle');
+                      }}
+                      className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                        currentType === 'rectangle'
+                          ? 'bg-red-600 text-white shadow-xs'
+                          : 'text-gray-700 hover:bg-gray-200'
+                      }`}
+                      title="Khung ô vuông hoặc chữ nhật"
+                    >
+                      <Square className="w-3.5 h-3.5" />
+                      <span>Ô vuông</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        updateCurrentShape({ type: 'circle' });
+                        if (activeTool === 'Rectangle') setActiveTool('Circle');
+                      }}
+                      className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                        currentType === 'circle'
+                          ? 'bg-red-600 text-white shadow-xs'
+                          : 'text-gray-700 hover:bg-gray-200'
+                      }`}
+                      title="Khoanh vùng tròn hoặc bầu dục"
+                    >
+                      <Circle className="w-3.5 h-3.5" />
+                      <span>Khoanh tròn</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="w-px h-10 bg-red-200/80"></div>
+
+                {/* 2. Stroke Color */}
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[9px] font-bold text-red-950 uppercase tracking-wider">Màu viền</span>
+                  <div className="flex items-center gap-1.5">
+                    {SHAPE_PRESET_COLORS.map(c => (
+                      <button
+                        key={c.color}
+                        type="button"
+                        onClick={() => updateCurrentShape({ strokeColor: c.color })}
+                        className={`w-5 h-5 rounded-full border-2 transition-transform cursor-pointer ${
+                          (currentColor || '').toLowerCase() === c.color.toLowerCase()
+                            ? 'border-red-600 scale-115 shadow-sm ring-2 ring-red-300'
+                            : 'border-white hover:scale-105'
+                        }`}
+                        style={{ backgroundColor: c.color }}
+                        title={c.label}
+                      />
+                    ))}
+                    <label className="relative w-5 h-5 rounded-full border border-gray-300 overflow-hidden cursor-pointer flex items-center justify-center bg-gray-100 hover:opacity-90 shadow-2xs" title="Chọn màu tùy chỉnh">
+                      <input 
+                        type="color" 
+                        value={currentColor} 
+                        onChange={(e) => updateCurrentShape({ strokeColor: e.target.value })}
+                        className="opacity-0 absolute inset-0 cursor-pointer w-full h-full"
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="w-px h-10 bg-red-200/80"></div>
+
+                {/* 3. Stroke Width */}
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[9px] font-bold text-red-950 uppercase tracking-wider">Độ dày viền</span>
+                  <div className="flex items-center gap-1">
+                    {[1, 2, 3, 4, 6].map(w => (
+                      <button
+                        key={w}
+                        type="button"
+                        onClick={() => updateCurrentShape({ strokeWidth: w })}
+                        className={`px-1.5 py-1 rounded text-xs font-semibold border transition-all cursor-pointer ${
+                          currentWidth === w
+                            ? 'bg-red-600 text-white border-red-700 shadow-xs'
+                            : 'bg-white hover:bg-gray-100 text-gray-700 border-gray-300'
+                        }`}
+                        title={`${w}px`}
+                      >
+                        {w}px
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="w-px h-10 bg-red-200/80"></div>
+
+                {/* 4. Stroke Style */}
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[9px] font-bold text-red-950 uppercase tracking-wider">Kiểu viền</span>
+                  <div className="flex items-center bg-gray-100 p-0.5 rounded-lg border border-gray-300">
+                    <button
+                      type="button"
+                      onClick={() => updateCurrentShape({ strokeStyle: 'solid' })}
+                      className={`px-2 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                        currentStyle === 'solid'
+                          ? 'bg-red-600 text-white shadow-xs'
+                          : 'text-gray-700 hover:bg-gray-200'
+                      }`}
+                      title="Nét liền"
+                    >
+                      Nét liền
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateCurrentShape({ strokeStyle: 'dashed' })}
+                      className={`px-2 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                        currentStyle === 'dashed'
+                          ? 'bg-red-600 text-white shadow-xs'
+                          : 'text-gray-700 hover:bg-gray-200'
+                      }`}
+                      title="Nét đứt"
+                    >
+                      Nét đứt
+                    </button>
+                  </div>
+                </div>
+
+                <div className="w-px h-10 bg-red-200/80"></div>
+
+                {/* 5. Fill Color */}
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[9px] font-bold text-red-950 uppercase tracking-wider">Màu nền</span>
+                  <div className="flex items-center bg-gray-100 p-0.5 rounded-lg border border-gray-300">
+                    <button
+                      type="button"
+                      onClick={() => updateCurrentShape({ fillColor: 'transparent' })}
+                      className={`px-2 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                        currentFill === 'transparent'
+                          ? 'bg-red-600 text-white shadow-xs'
+                          : 'text-gray-700 hover:bg-gray-200'
+                      }`}
+                      title="Nền trong suốt, nhìn rõ chữ bên dưới"
+                    >
+                      Trong suốt
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateCurrentShape({ fillColor: 'light' })}
+                      className={`px-2 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                        currentFill === 'light'
+                          ? 'bg-red-600 text-white shadow-xs'
+                          : 'text-gray-700 hover:bg-gray-200'
+                      }`}
+                      title="Nền mờ nhẹ cùng màu viền"
+                    >
+                      Mờ nhẹ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateCurrentShape({ fillColor: 'white' })}
+                      className={`px-2 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                        currentFill === 'white'
+                          ? 'bg-red-600 text-white shadow-xs'
+                          : 'text-gray-700 hover:bg-gray-200'
+                      }`}
+                      title="Nền trắng để che nội dung hoặc tạo bảng"
+                    >
+                      Nền trắng
+                    </button>
+                  </div>
+                </div>
+
+                {/* 6. Actions */}
+                {(selectedSh || shapes.length > 0) && (
+                  <>
+                    <div className="w-px h-10 bg-red-200/80"></div>
+                    <div className="flex items-center gap-1.5">
+                      {selectedSh && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShapes(prev => prev.filter(s => s.id !== selectedSh.id));
+                              setSelectedShapeId(null);
+                            }}
+                            className="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                            title="Xóa hình này (Phím Delete)"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                            <span>Xóa hình</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedShapeId(null)}
+                            className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                            title="Hoàn tất chọn hình"
+                          >
+                            <Check className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>Xong</span>
+                          </button>
+                        </>
+                      )}
+                      {shapes.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShapes([]);
+                            setSelectedShapeId(null);
+                          }}
+                          className="px-2 py-1.5 bg-gray-50 hover:bg-red-50 text-gray-600 hover:text-red-700 border border-gray-200 hover:border-red-200 rounded-lg text-[11px] font-semibold flex items-center gap-1 cursor-pointer transition-colors"
+                          title="Xóa toàn bộ các ô vuông & khoanh vùng đã vẽ"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Xóa hết ({shapes.length})</span>
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-red-950/60 uppercase tracking-wider font-semibold">Tùy chọn Kẻ ô vuông & Khoanh vùng</div>
+              </div>
+            </>
+          );
+        })()}
         
         <div className="w-px h-16 bg-gray-300"></div>
 
@@ -4709,6 +5824,7 @@ export default function App() {
                 {renderFields(0)}
                 {renderHighlights(0)}
                 {renderTextBoxes(0)}
+                {renderShapes(0)}
                 {renderDrawingBox(0)}
             </div>
           </div>
@@ -4776,7 +5892,7 @@ export default function App() {
                    <div 
                      id={`page-${i}`}
                      className={`bg-white shadow-xl relative origin-top-left transition-all duration-150 flex-shrink-0 ${
-                       (activeTool === 'Signature Field' || activeTool === 'Highlight' || activeTool === 'Text Box') ? 'cursor-crosshair' : 'cursor-default'
+                       (activeTool === 'Signature Field' || activeTool === 'Highlight' || activeTool === 'Text Box' || activeTool === 'Rectangle' || activeTool === 'Circle') ? 'cursor-crosshair' : 'cursor-default'
                      } ${isPageSelected ? 'ring-4 ring-indigo-500 ring-offset-2 scale-[1.005] z-20' : ''}`}
                      style={{ 
                        width: p.width, 
@@ -4790,6 +5906,7 @@ export default function App() {
                       {renderFields(i)}
                       {renderHighlights(i)}
                       {renderTextBoxes(i)}
+                      {renderShapes(i)}
                       {activeTool === 'Edit Text' && renderOriginalTexts(i)}
                       {renderModifiedTextsOverlay(i)}
                       {renderDrawingBox(i)}
@@ -5448,6 +6565,43 @@ export default function App() {
 
   function renderDrawingBox(pageIndex: number) {
      if (!drawing || drawing.pageIndex !== pageIndex) return null;
+     if (activeTool === 'Rectangle' || activeTool === 'Circle') {
+       const isCircle = activeTool === 'Circle';
+       const borderStyleVal = shapeStrokeStyle === 'dashed' ? 'dashed' : shapeStrokeStyle === 'dotted' ? 'dotted' : 'solid';
+       let bgStyle: React.CSSProperties = {};
+       if (shapeFill === 'white') {
+         bgStyle.backgroundColor = '#ffffff';
+       } else if (shapeFill === 'light') {
+         bgStyle.backgroundColor = `${shapeStrokeColor}26`;
+       } else {
+         bgStyle.backgroundColor = 'transparent';
+       }
+
+       return (
+         <div 
+           className={`absolute pointer-events-none z-30 transition-none ${
+             isCircle ? 'rounded-[50%]' : 'rounded-none'
+           }`}
+           style={{ 
+             left: Math.min(drawing.startX, drawing.currentX), 
+             top: Math.min(drawing.startY, drawing.currentY), 
+             width: Math.abs(drawing.currentX - drawing.startX), 
+             height: Math.abs(drawing.currentY - drawing.startY),
+             borderWidth: `${shapeStrokeWidth}px`,
+             borderColor: shapeStrokeColor,
+             borderStyle: borderStyleVal,
+             ...bgStyle,
+           }}
+         >
+           <div 
+             className="absolute top-0 left-0 text-white text-[10px] font-bold px-1.5 py-0.5 whitespace-nowrap transform -translate-y-[calc(100%+2px)] leading-none rounded-t shadow-xs flex items-center gap-1"
+             style={{ backgroundColor: shapeStrokeColor }}
+           >
+             {isCircle ? 'Khoanh vùng (Tròn/Elip)' : 'Kẻ ô vuông / Chữ nhật'}
+           </div>
+         </div>
+       );
+     }
      if (activeTool === 'Highlight') {
        const isEraser = highlightToolMode === 'eraser';
        return (
@@ -5492,6 +6646,122 @@ export default function App() {
               </div>
         </div>
      );
+  }
+
+  function renderShapes(pageIndex: number) {
+    return shapes
+      .filter(s => s.pageIndex === pageIndex)
+      .map(s => {
+        const isSelected = s.id === selectedShapeId;
+        const isCircle = s.type === 'circle';
+
+        let bgStyle: React.CSSProperties = {};
+        if (s.fillColor === 'white') {
+          bgStyle.backgroundColor = '#ffffff';
+        } else if (s.fillColor === 'light') {
+          bgStyle.backgroundColor = `${s.strokeColor}26`;
+        } else {
+          bgStyle.backgroundColor = 'transparent';
+        }
+
+        const borderStyleVal = s.strokeStyle === 'dashed' ? 'dashed' : s.strokeStyle === 'dotted' ? 'dotted' : 'solid';
+
+        return (
+          <div
+            key={s.id}
+            id={`shape-${s.id}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setSelectedShapeId(s.id);
+              setSelectedFieldId(null);
+              setSelectedHighlightId(null);
+              setSelectedTextBoxId(null);
+              setSelectedTextId(null);
+            }}
+            onMouseDown={(e) => {
+              if (isDigitallySigned) return;
+              e.stopPropagation();
+              setSelectedShapeId(s.id);
+              setSelectedFieldId(null);
+              setSelectedHighlightId(null);
+              setSelectedTextBoxId(null);
+              setSelectedTextId(null);
+              handleShapeResizeDown(e, s, 'drag');
+            }}
+            className={`absolute group select-none transition-shadow z-25 cursor-move ${
+              isCircle ? 'rounded-[50%]' : 'rounded-none'
+            } ${
+              isSelected ? 'ring-2 ring-blue-500 ring-offset-1 shadow-md' : 'hover:ring-1 hover:ring-blue-400/60'
+            }`}
+            style={{
+              left: s.x,
+              top: s.y,
+              width: s.width,
+              height: s.height,
+              borderWidth: `${s.strokeWidth}px`,
+              borderColor: s.strokeColor,
+              borderStyle: borderStyleVal,
+              ...bgStyle,
+            }}
+            title={isCircle ? "Khoanh vùng tròn / elip (Kéo để di chuyển, kéo các điểm neo để chỉnh kích thước)" : "Khung chữ nhật / ô vuông (Kéo để di chuyển, kéo các điểm neo để chỉnh kích thước)"}
+          >
+            {/* 8 Resize Handles when selected */}
+            {isSelected && !isDigitallySigned && (
+              <>
+                {/* 4 Corners */}
+                <div
+                  onMouseDown={(e) => handleShapeResizeDown(e, s, 'nw')}
+                  className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-full cursor-nw-resize z-40 shadow-xs hover:scale-125 transition-transform"
+                />
+                <div
+                  onMouseDown={(e) => handleShapeResizeDown(e, s, 'ne')}
+                  className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-full cursor-ne-resize z-40 shadow-xs hover:scale-125 transition-transform"
+                />
+                <div
+                  onMouseDown={(e) => handleShapeResizeDown(e, s, 'se')}
+                  className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-full cursor-se-resize z-40 shadow-xs hover:scale-125 transition-transform"
+                />
+                <div
+                  onMouseDown={(e) => handleShapeResizeDown(e, s, 'sw')}
+                  className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-full cursor-sw-resize z-40 shadow-xs hover:scale-125 transition-transform"
+                />
+
+                {/* 4 Edges */}
+                <div
+                  onMouseDown={(e) => handleShapeResizeDown(e, s, 'n')}
+                  className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 bg-white border-2 border-blue-600 rounded-full cursor-n-resize z-40 shadow-xs hover:scale-125 transition-transform"
+                />
+                <div
+                  onMouseDown={(e) => handleShapeResizeDown(e, s, 's')}
+                  className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3 h-3 bg-white border-2 border-blue-600 rounded-full cursor-s-resize z-40 shadow-xs hover:scale-125 transition-transform"
+                />
+                <div
+                  onMouseDown={(e) => handleShapeResizeDown(e, s, 'w')}
+                  className="absolute top-1/2 -translate-y-1/2 -left-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-full cursor-w-resize z-40 shadow-xs hover:scale-125 transition-transform"
+                />
+                <div
+                  onMouseDown={(e) => handleShapeResizeDown(e, s, 'e')}
+                  className="absolute top-1/2 -translate-y-1/2 -right-1.5 w-3 h-3 bg-white border-2 border-blue-600 rounded-full cursor-e-resize z-40 shadow-xs hover:scale-125 transition-transform"
+                />
+
+                {/* Quick Floating Delete Button */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShapes(prev => prev.filter(item => item.id !== s.id));
+                    setSelectedShapeId(null);
+                  }}
+                  className="absolute -top-3.5 -right-3.5 w-6 h-6 bg-red-600 hover:bg-red-700 text-white rounded-full flex items-center justify-center shadow-lg transition-all z-50 cursor-pointer"
+                  title="Xóa hình này (Phím Delete)"
+                >
+                  <Trash2 className="w-3.5 h-3.5 stroke-[2.5]" />
+                </button>
+              </>
+            )}
+          </div>
+        );
+      });
   }
 
   function handleSelectText(t: PdfTextItem) {

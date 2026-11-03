@@ -76,3 +76,17 @@ export type TextBoxItem = {
   hasBackground: boolean; // true = nền trắng (white), false = trong suốt (transparent)
   hasBorder?: boolean; // true = có viền, false = không viền
 };
+
+export type ShapeItem = {
+  id: string;
+  pageIndex: number;
+  type: 'rectangle' | 'circle';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  strokeColor: string;
+  strokeWidth: number;
+  strokeStyle?: 'solid' | 'dashed' | 'dotted';
+  fillColor?: 'transparent' | 'light' | 'white';
+};
