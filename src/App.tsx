@@ -2925,19 +2925,15 @@ export default function App() {
     if (!drawing) return;
 
     if (activeTool === 'Rectangle' || activeTool === 'Circle') {
-      let width = Math.abs(drawing.currentX - drawing.startX);
-      let height = Math.abs(drawing.currentY - drawing.startY);
-      let x = Math.min(drawing.startX, drawing.currentX);
-      let y = Math.min(drawing.startY, drawing.currentY);
+      const width = Math.abs(drawing.currentX - drawing.startX);
+      const height = Math.abs(drawing.currentY - drawing.startY);
+      const x = Math.min(drawing.startX, drawing.currentX);
+      const y = Math.min(drawing.startY, drawing.currentY);
 
-      if (width < 10 || height < 10) {
-        if (activeTool === 'Circle' || shapeType === 'circle') {
-          width = 120;
-          height = 70;
-        } else {
-          width = 140;
-          height = 60;
-        }
+      // Chỉ tạo ô vuông / khoanh vùng khi người dùng nhấn giữ và kéo chuột (không tự tạo khi chỉ click chuột)
+      if (width < 8 || height < 8) {
+        setDrawing(null);
+        return;
       }
 
       const newId = `shape-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
@@ -4601,15 +4597,15 @@ export default function App() {
       )}
 
       {/* Ribbon */}
-      <div className="bg-gradient-to-b from-[#f8f9fa] to-[#f1f3f5] border-b border-gray-300 px-4 py-2 flex items-start space-x-6 z-0 shadow-sm min-h-[90px]">
+      <div className="bg-gradient-to-b from-[#f8f9fa] to-[#f1f3f5] border-b border-gray-300 px-3 py-2 pb-3 flex flex-wrap items-start gap-x-2.5 gap-y-3 z-0 shadow-sm min-h-[86px]">
         {/* File Group */}
-        <div className="flex items-start space-x-1 relative pr-6 group/file">
+        <div className="flex items-start space-x-0.5 relative group/file">
            <button 
              onClick={() => fileInputRef.current?.click()}
-             className="flex flex-col items-center justify-start w-[68px] h-[68px] rounded-lg border border-transparent hover:bg-white hover:border-indigo-200 hover:shadow-sm p-1 pt-1.5 gap-1 transition-all relative overflow-hidden group"
+             className="flex flex-col items-center justify-start w-[58px] h-[64px] rounded-lg border border-transparent hover:bg-white hover:border-indigo-200 hover:shadow-sm p-1 pt-1.5 gap-1 transition-all relative overflow-hidden group"
            >
              <div className="absolute inset-0 bg-indigo-50 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-             <FileUp className="w-6 h-6 text-indigo-600 z-10 drop-shadow-sm" strokeWidth={1.5} />
+             <FileUp className="w-5 h-5 text-indigo-600 z-10 drop-shadow-sm" strokeWidth={1.5} />
              <span className="text-[10px] font-medium leading-[1.1] text-center text-gray-700 z-10">Nhập PDF</span>
            </button>
            <button 
@@ -4621,7 +4617,7 @@ export default function App() {
                appendFileInputRef.current?.click();
              }}
              disabled={isDigitallySigned}
-             className={`flex flex-col items-center justify-start w-[68px] h-[68px] rounded-lg border ${
+             className={`flex flex-col items-center justify-start w-[58px] h-[64px] rounded-lg border ${
                isDigitallySigned 
                  ? 'opacity-40 cursor-not-allowed border-transparent bg-gray-50' 
                  : 'border-transparent hover:bg-white hover:border-indigo-200 hover:shadow-sm'
@@ -4629,16 +4625,16 @@ export default function App() {
              title={isDigitallySigned ? "Đã khóa do tài liệu đã ký số" : "Thêm các trang từ file PDF khác vào cuối tài liệu này"}
            >
              {!isDigitallySigned && <div className="absolute inset-0 bg-indigo-50 opacity-0 group-hover:opacity-100 transition-opacity"></div>}
-             <FilePlus className={`w-6 h-6 z-10 drop-shadow-sm ${isDigitallySigned ? 'text-gray-400' : 'text-indigo-600'}`} strokeWidth={1.5} />
+             <FilePlus className={`w-5 h-5 z-10 drop-shadow-sm ${isDigitallySigned ? 'text-gray-400' : 'text-indigo-600'}`} strokeWidth={1.5} />
              <span className={`text-[10px] font-medium leading-[1.1] text-center z-10 ${isDigitallySigned ? 'text-gray-400' : 'text-gray-700'}`}>Thêm trang<br/>ở cuối</span>
            </button>
-           <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-indigo-800/60 uppercase tracking-wider font-semibold">Tài liệu</div>
+           <div className="absolute -bottom-2 inset-x-0 text-center text-[9px] text-indigo-800/60 uppercase tracking-wider font-semibold pointer-events-none">Tài liệu</div>
         </div>
 
-        <div className="w-px h-16 bg-gray-300"></div>
+        <div className="w-px h-15 bg-gray-300 self-center"></div>
 
         {/* Tools Group */}
-        <div className="flex items-start space-x-1 relative pr-6">
+        <div className="flex items-start space-x-0.5 relative">
            <RibbonButton 
               icon={PanelLeft} 
               label={"Bảng\ntrang"} 
@@ -4714,18 +4710,19 @@ export default function App() {
               label={"Kẻ ô vuông\n(Khung)"} 
               active={activeTool === 'Rectangle'} 
               disabled={isDigitallySigned}
-              title={isDigitallySigned ? "Không thể vẽ vì tài liệu đã được ký số" : "Kẻ ô vuông hoặc khung viền chữ nhật"}
+              title={isDigitallySigned ? "Không thể vẽ vì tài liệu đã được ký số" : "Nhấn giữ và kéo chuột để kẻ ô vuông hoặc khung chữ nhật"}
               onClick={() => {
                 if (isDigitallySigned) {
                   alert("Tài liệu hiện tại đã được ký số. Không thể vẽ khung mới.");
                   return;
                 }
-                setActiveTool('Rectangle');
+                setActiveTool(activeTool === 'Rectangle' ? 'Select' : 'Rectangle');
                 setShapeType('rectangle');
                 setSelectedFieldId(null);
                 setSelectedTextId(null);
                 setSelectedHighlightId(null);
                 setSelectedTextBoxId(null);
+                setSelectedShapeId(null);
               }}
            />
            <RibbonButton 
@@ -4733,27 +4730,28 @@ export default function App() {
               label={"Khoanh vùng\n(Tròn/Elip)"} 
               active={activeTool === 'Circle'} 
               disabled={isDigitallySigned}
-              title={isDigitallySigned ? "Không thể vẽ vì tài liệu đã được ký số" : "Khoanh vùng hình tròn hoặc bầu dục"}
+              title={isDigitallySigned ? "Không thể vẽ vì tài liệu đã được ký số" : "Nhấn giữ và kéo chuột để khoanh vùng hình tròn hoặc bầu dục"}
               onClick={() => {
                 if (isDigitallySigned) {
                   alert("Tài liệu hiện tại đã được ký số. Không thể khoanh vùng mới.");
                   return;
                 }
-                setActiveTool('Circle');
+                setActiveTool(activeTool === 'Circle' ? 'Select' : 'Circle');
                 setShapeType('circle');
                 setSelectedFieldId(null);
                 setSelectedTextId(null);
                 setSelectedHighlightId(null);
                 setSelectedTextBoxId(null);
+                setSelectedShapeId(null);
               }}
            />
-           <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-gray-500 uppercase tracking-wider">Công cụ</div>
+           <div className="absolute -bottom-2 inset-x-0 text-center text-[9px] text-gray-500 uppercase tracking-wider pointer-events-none">Công cụ</div>
         </div>
 
-        <div className="w-px h-16 bg-gray-300"></div>
+        <div className="w-px h-15 bg-gray-300 self-center"></div>
 
         {/* History Group (Undo / Redo) */}
-        <div className="flex items-start space-x-1 relative pr-4">
+        <div className="flex items-start space-x-0.5 relative">
            <RibbonButton 
               icon={Undo2} 
               label={"Hoàn tác\n(Ctrl+Z)"} 
@@ -4770,17 +4768,17 @@ export default function App() {
               title={canRedo ? `Làm lại thao tác vừa hoàn tác (Ctrl+Y / Ctrl+Shift+Z) - Còn ${redoStack.length} bước` : "Chưa có thao tác nào để làm lại"}
               onClick={handleRedo}
            />
-           <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-gray-500 uppercase tracking-wider">Lịch sử</div>
+           <div className="absolute -bottom-2 inset-x-0 text-center text-[9px] text-gray-500 uppercase tracking-wider pointer-events-none">Lịch sử</div>
         </div>
         
         {activeTool === 'Edit Text' && (() => {
            const currentSelectedText = pdfTexts.find(t => t.id === selectedTextId);
            return (
              <>
-               <div className="w-px h-16 bg-gray-300"></div>
+               <div className="w-px h-15 bg-gray-300 self-center hidden xl:block"></div>
 
                {/* Formatting Ribbon Group */}
-               <div className="flex items-center gap-2.5 bg-white/95 border border-indigo-200 rounded-xl px-3 py-1 h-[68px] shadow-xs relative">
+               <div className="flex flex-wrap items-center gap-2 bg-white/95 border border-indigo-200 rounded-xl px-2.5 py-1.5 min-h-[64px] shadow-xs relative">
                  {/* Font family selector */}
                  <div className="flex flex-col gap-0.5">
                    <div className="flex items-center justify-between">
@@ -4995,10 +4993,10 @@ export default function App() {
 
           return (
             <>
-              <div className="w-px h-16 bg-gray-300"></div>
+              <div className="w-px h-15 bg-gray-300 self-center hidden xl:block"></div>
 
               {/* Highlight & Eraser Toolbar Group */}
-              <div className="flex items-center gap-3 bg-white/95 border border-amber-300 rounded-xl px-3 py-1 h-[68px] shadow-xs relative">
+              <div className="flex flex-wrap items-center gap-2.5 bg-white/95 border border-amber-300 rounded-xl px-2.5 py-1.5 min-h-[64px] shadow-xs relative">
                 {/* Mode Selector: Tô sáng vs Tẩy vết màu cũ */}
                 <div className="flex flex-col gap-1">
                   <span className="text-[9px] font-bold text-amber-950 uppercase tracking-wider">Chế độ</span>
@@ -5201,10 +5199,10 @@ export default function App() {
 
           return (
             <>
-              <div className="w-px h-16 bg-gray-300"></div>
+              <div className="w-px h-15 bg-gray-300 self-center hidden xl:block"></div>
 
               {/* Text Box Formatting Ribbon Group */}
-              <div className="flex items-center gap-2.5 bg-white/95 border border-blue-300 rounded-xl px-3 py-1 h-[68px] shadow-xs relative">
+              <div className="flex flex-wrap items-center gap-2 bg-white/95 border border-blue-300 rounded-xl px-2.5 py-1.5 min-h-[64px] shadow-xs relative">
                 {/* 1. Font Family */}
                 <div className="flex flex-col gap-0.5">
                   <span className="text-[9px] font-bold text-blue-950 uppercase tracking-wider">Phông chữ</span>
@@ -5434,21 +5432,32 @@ export default function App() {
           const currentStyle = selectedSh?.strokeStyle || shapeStrokeStyle;
           const currentFill = selectedSh?.fillColor || shapeFill;
 
-          const SHAPE_PRESET_COLORS = [
-            { label: 'Đỏ', color: '#ef4444' },
-            { label: 'Xanh dương', color: '#2563eb' },
-            { label: 'Đen', color: '#000000' },
-            { label: 'Xanh lá', color: '#16a34a' },
-            { label: 'Cam', color: '#f97316' },
-            { label: 'Tím', color: '#9333ea' },
+          const SHAPE_STANDARD_COLORS = [
+            { label: 'Đỏ (#EF4444)', color: '#ef4444' },
+            { label: 'Xanh dương (#2563EB)', color: '#2563eb' },
+            { label: 'Đen (#000000)', color: '#000000' },
+            { label: 'Xanh lá (#16A34A)', color: '#16a34a' },
+            { label: 'Cam (#F97316)', color: '#f97316' },
+            { label: 'Tím (#9333EA)', color: '#9333ea' },
+          ];
+
+          const SHAPE_PASTEL_COLORS = [
+            { label: 'Hồng Pastel (#F9A8D4)', color: '#f9a8d4' },
+            { label: 'Cam Đào Pastel (#FDBA74)', color: '#fdba74' },
+            { label: 'Vàng Kem Pastel (#FDE047)', color: '#fde047' },
+            { label: 'Xanh Mint Pastel (#86EFAC)', color: '#86efac' },
+            { label: 'Ngọc Bích Pastel (#5EEAD4)', color: '#5eead4' },
+            { label: 'Xanh Dương Pastel (#93C5FD)', color: '#93c5fd' },
+            { label: 'Tím Lavender Pastel (#D8B4FE)', color: '#d8b4fe' },
+            { label: 'Xám Khói Pastel (#CBD5E1)', color: '#cbd5e1' },
           ];
 
           return (
             <>
-              <div className="w-px h-16 bg-gray-300"></div>
+              <div className="w-px h-15 bg-gray-300 self-center hidden xl:block"></div>
 
               {/* Shape Formatting Ribbon Group */}
-              <div className="flex items-center gap-2.5 bg-white/95 border border-red-300 rounded-xl px-3 py-1 h-[68px] shadow-xs relative">
+              <div className="flex flex-wrap items-center gap-2 bg-white/95 border border-red-300 rounded-xl px-2.5 py-1.5 min-h-[64px] shadow-xs relative">
                 {/* 1. Shape Switcher */}
                 <div className="flex flex-col gap-0.5">
                   <span className="text-[9px] font-bold text-red-950 uppercase tracking-wider">Hình dạng</span>
@@ -5488,38 +5497,93 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="w-px h-10 bg-red-200/80"></div>
+                <div className="w-px h-9 bg-red-200/80"></div>
 
-                {/* 2. Stroke Color */}
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-[9px] font-bold text-red-950 uppercase tracking-wider">Màu viền</span>
-                  <div className="flex items-center gap-1.5">
-                    {SHAPE_PRESET_COLORS.map(c => (
-                      <button
-                        key={c.color}
-                        type="button"
-                        onClick={() => updateCurrentShape({ strokeColor: c.color })}
-                        className={`w-5 h-5 rounded-full border-2 transition-transform cursor-pointer ${
-                          (currentColor || '').toLowerCase() === c.color.toLowerCase()
-                            ? 'border-red-600 scale-115 shadow-sm ring-2 ring-red-300'
-                            : 'border-white hover:scale-105'
-                        }`}
-                        style={{ backgroundColor: c.color }}
-                        title={c.label}
-                      />
-                    ))}
-                    <label className="relative w-5 h-5 rounded-full border border-gray-300 overflow-hidden cursor-pointer flex items-center justify-center bg-gray-100 hover:opacity-90 shadow-2xs" title="Chọn màu tùy chỉnh">
-                      <input 
-                        type="color" 
-                        value={currentColor} 
-                        onChange={(e) => updateCurrentShape({ strokeColor: e.target.value })}
-                        className="opacity-0 absolute inset-0 cursor-pointer w-full h-full"
-                      />
-                    </label>
+                {/* 2. Quick-Select Color Palette (Standard & Pastel) */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[9px] font-bold text-red-950 uppercase tracking-wider">
+                      Bảng màu viền (Cơ bản & Pastel)
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <span
+                        className="text-[9px] font-mono font-bold px-1 py-0.2 rounded bg-gray-100 text-gray-700 border border-gray-300 uppercase"
+                        title="Mã màu đang chọn"
+                      >
+                        {currentColor}
+                      </span>
+                      {shapes.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShapes(prev =>
+                              prev.map(s => ({
+                                ...s,
+                                strokeColor: currentColor,
+                                fillColor: currentFill,
+                              }))
+                            );
+                          }}
+                          className="text-[9px] font-semibold px-1.5 py-0.2 rounded bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 transition-colors cursor-pointer"
+                          title="Đồng bộ màu viền và màu nền hiện tại cho toàn bộ các hình đã vẽ"
+                        >
+                          Đồng bộ màu
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    {/* Standard Colors Row */}
+                    <div className="flex items-center gap-1">
+                      <span className="text-[9px] text-gray-500 font-medium w-9">Đậm:</span>
+                      {SHAPE_STANDARD_COLORS.map(c => (
+                        <button
+                          key={c.color}
+                          type="button"
+                          onClick={() => updateCurrentShape({ strokeColor: c.color })}
+                          className={`w-4 h-4 rounded-full border transition-transform cursor-pointer ${
+                            (currentColor || '').toLowerCase() === c.color.toLowerCase()
+                              ? 'border-red-600 scale-120 shadow-xs ring-2 ring-red-300'
+                              : 'border-gray-300 hover:scale-110'
+                          }`}
+                          style={{ backgroundColor: c.color }}
+                          title={c.label}
+                        />
+                      ))}
+                      <label
+                        className="relative w-4 h-4 rounded-full border border-dashed border-gray-400 overflow-hidden cursor-pointer flex items-center justify-center bg-linear-to-tr from-pink-200 via-yellow-200 to-sky-200 hover:scale-110 transition-transform shadow-2xs"
+                        title="Chọn mã màu tùy chỉnh khác"
+                      >
+                        <input
+                          type="color"
+                          value={currentColor}
+                          onChange={(e) => updateCurrentShape({ strokeColor: e.target.value })}
+                          className="opacity-0 absolute inset-0 cursor-pointer w-full h-full"
+                        />
+                      </label>
+                    </div>
+                    {/* Pastel Colors Row */}
+                    <div className="flex items-center gap-1">
+                      <span className="text-[9px] text-pink-600 font-semibold w-9">Pastel:</span>
+                      {SHAPE_PASTEL_COLORS.map(c => (
+                        <button
+                          key={c.color}
+                          type="button"
+                          onClick={() => updateCurrentShape({ strokeColor: c.color })}
+                          className={`w-4 h-4 rounded-full border transition-transform cursor-pointer ${
+                            (currentColor || '').toLowerCase() === c.color.toLowerCase()
+                              ? 'border-red-600 scale-120 shadow-xs ring-2 ring-red-300'
+                              : 'border-gray-300 hover:scale-110'
+                          }`}
+                          style={{ backgroundColor: c.color }}
+                          title={c.label}
+                        />
+                      ))}
+                    </div>
                   </div>
                 </div>
 
-                <div className="w-px h-10 bg-red-200/80"></div>
+                <div className="w-px h-9 bg-red-200/80"></div>
 
                 {/* 3. Stroke Width */}
                 <div className="flex flex-col gap-0.5">
@@ -5530,7 +5594,7 @@ export default function App() {
                         key={w}
                         type="button"
                         onClick={() => updateCurrentShape({ strokeWidth: w })}
-                        className={`px-1.5 py-1 rounded text-xs font-semibold border transition-all cursor-pointer ${
+                        className={`px-1.5 py-0.5 rounded text-xs font-semibold border transition-all cursor-pointer ${
                           currentWidth === w
                             ? 'bg-red-600 text-white border-red-700 shadow-xs'
                             : 'bg-white hover:bg-gray-100 text-gray-700 border-gray-300'
@@ -5543,7 +5607,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="w-px h-10 bg-red-200/80"></div>
+                <div className="w-px h-9 bg-red-200/80"></div>
 
                 {/* 4. Stroke Style */}
                 <div className="flex flex-col gap-0.5">
@@ -5552,7 +5616,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => updateCurrentShape({ strokeStyle: 'solid' })}
-                      className={`px-2 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                      className={`px-1.5 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
                         currentStyle === 'solid'
                           ? 'bg-red-600 text-white shadow-xs'
                           : 'text-gray-700 hover:bg-gray-200'
@@ -5564,7 +5628,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => updateCurrentShape({ strokeStyle: 'dashed' })}
-                      className={`px-2 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                      className={`px-1.5 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
                         currentStyle === 'dashed'
                           ? 'bg-red-600 text-white shadow-xs'
                           : 'text-gray-700 hover:bg-gray-200'
@@ -5576,7 +5640,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="w-px h-10 bg-red-200/80"></div>
+                <div className="w-px h-9 bg-red-200/80"></div>
 
                 {/* 5. Fill Color */}
                 <div className="flex flex-col gap-0.5">
@@ -5585,7 +5649,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => updateCurrentShape({ fillColor: 'transparent' })}
-                      className={`px-2 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                      className={`px-1.5 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
                         currentFill === 'transparent'
                           ? 'bg-red-600 text-white shadow-xs'
                           : 'text-gray-700 hover:bg-gray-200'
@@ -5597,7 +5661,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => updateCurrentShape({ fillColor: 'light' })}
-                      className={`px-2 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                      className={`px-1.5 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
                         currentFill === 'light'
                           ? 'bg-red-600 text-white shadow-xs'
                           : 'text-gray-700 hover:bg-gray-200'
@@ -5609,7 +5673,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => updateCurrentShape({ fillColor: 'white' })}
-                      className={`px-2 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                      className={`px-1.5 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
                         currentFill === 'white'
                           ? 'bg-red-600 text-white shadow-xs'
                           : 'text-gray-700 hover:bg-gray-200'
@@ -5624,7 +5688,7 @@ export default function App() {
                 {/* 6. Actions */}
                 {(selectedSh || shapes.length > 0) && (
                   <>
-                    <div className="w-px h-10 bg-red-200/80"></div>
+                    <div className="w-px h-9 bg-red-200/80"></div>
                     <div className="flex items-center gap-1.5">
                       {selectedSh && (
                         <>
@@ -5634,7 +5698,7 @@ export default function App() {
                               setShapes(prev => prev.filter(s => s.id !== selectedSh.id));
                               setSelectedShapeId(null);
                             }}
-                            className="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                            className="px-2 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
                             title="Xóa hình này (Phím Delete)"
                           >
                             <Trash2 className="w-3.5 h-3.5 text-red-600" />
@@ -5642,9 +5706,11 @@ export default function App() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => setSelectedShapeId(null)}
-                            className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
-                            title="Hoàn tất chọn hình"
+                            onClick={() => {
+                              setSelectedShapeId(null);
+                            }}
+                            className="px-2 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                            title="Bỏ chọn hình hiện tại"
                           >
                             <Check className="w-3.5 h-3.5 text-emerald-600" />
                             <span>Xong</span>
@@ -5669,28 +5735,28 @@ export default function App() {
                   </>
                 )}
 
-                <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-red-950/60 uppercase tracking-wider font-semibold">Tùy chọn Kẻ ô vuông & Khoanh vùng</div>
+                <div className="absolute -bottom-2 inset-x-0 text-center text-[9px] text-red-950/60 uppercase tracking-wider font-semibold pointer-events-none">Tùy chọn Kẻ ô vuông & Khoanh vùng</div>
               </div>
             </>
           );
         })()}
         
-        <div className="w-px h-16 bg-gray-300"></div>
+        <div className="w-px h-15 bg-gray-300 self-center"></div>
 
         {/* Help Group */}
-        <div className="flex items-start space-x-1 relative pr-6">
+        <div className="flex items-start space-x-0.5 relative">
            <RibbonButton 
               icon={HelpCircle} 
               label={"Hướng dẫn\nsử dụng"} 
               active={showHelpModal} 
               onClick={() => setShowHelpModal(true)}
            />
-           <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-gray-500 uppercase tracking-wider">Trợ giúp</div>
+           <div className="absolute -bottom-2 inset-x-0 text-center text-[9px] text-gray-500 uppercase tracking-wider pointer-events-none">Trợ giúp</div>
         </div>
 
-        <div className="w-px h-16 bg-gray-300"></div>
+        <div className="w-px h-15 bg-gray-300 self-center"></div>
         
-        <div className="flex items-center h-[68px]">
+        <div className="flex items-center h-[64px]">
              <button 
                 onClick={() => {
                   if (!originalPdfBuffer) {
@@ -5700,9 +5766,9 @@ export default function App() {
                   setExportFilename(documentName);
                   setShowExportModal(true);
                 }}
-                className="flex flex-col items-center justify-center w-24 h-[68px] rounded border border-blue-500 bg-blue-50 hover:bg-blue-100 p-2 gap-1 text-blue-700 font-bold transition-colors shadow-sm ml-4"
+                className="flex flex-col items-center justify-center w-[76px] h-[64px] rounded-lg border border-blue-500 bg-blue-50 hover:bg-blue-100 p-1.5 gap-1 text-blue-700 font-bold transition-colors shadow-sm cursor-pointer"
               >
-                <FileDown className="w-6 h-6" />
+                <FileDown className="w-5 h-5" />
                 <span className="text-[10px] leading-tight text-center">Xuất file PDF</span>
              </button>
         </div>
@@ -5769,6 +5835,16 @@ export default function App() {
             <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
             <Type className="w-4 h-4 text-blue-300" />
             <span>Kéo chuột hoặc nhấp vào trang để chèn ô chữ (Nhấn <kbd className="bg-blue-700 px-1.5 py-0.5 rounded text-[10px] border border-blue-500 font-mono">ESC</kbd> hoặc nút <b>Chọn</b> để thoát)</span>
+          </div>
+        )}
+
+        {(activeTool === 'Rectangle' || activeTool === 'Circle') && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-900/95 text-white px-4 py-2.5 rounded-full shadow-lg flex items-center gap-2.5 text-xs font-semibold backdrop-blur-md border border-red-500/30 z-50">
+            <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />
+            {activeTool === 'Circle' ? <Circle className="w-4 h-4 text-red-300" /> : <Square className="w-4 h-4 text-red-300" />}
+            <span>
+              Nhấn giữ và kéo chuột trên trang để {activeTool === 'Circle' ? 'khoanh vùng' : 'kẻ ô vuông'} (Nhấn <kbd className="bg-red-700 px-1.5 py-0.5 rounded text-[10px] border border-red-500 font-mono">ESC</kbd> hoặc nút <b>Chọn</b> để hủy)
+            </span>
           </div>
         )}
 
@@ -6566,6 +6642,9 @@ export default function App() {
   function renderDrawingBox(pageIndex: number) {
      if (!drawing || drawing.pageIndex !== pageIndex) return null;
      if (activeTool === 'Rectangle' || activeTool === 'Circle') {
+       const drawW = Math.abs(drawing.currentX - drawing.startX);
+       const drawH = Math.abs(drawing.currentY - drawing.startY);
+       if (drawW < 8 && drawH < 8) return null;
        const isCircle = activeTool === 'Circle';
        const borderStyleVal = shapeStrokeStyle === 'dashed' ? 'dashed' : shapeStrokeStyle === 'dotted' ? 'dotted' : 'solid';
        let bgStyle: React.CSSProperties = {};
@@ -6585,8 +6664,8 @@ export default function App() {
            style={{ 
              left: Math.min(drawing.startX, drawing.currentX), 
              top: Math.min(drawing.startY, drawing.currentY), 
-             width: Math.abs(drawing.currentX - drawing.startX), 
-             height: Math.abs(drawing.currentY - drawing.startY),
+             width: drawW, 
+             height: drawH,
              borderWidth: `${shapeStrokeWidth}px`,
              borderColor: shapeStrokeColor,
              borderStyle: borderStyleVal,
@@ -7040,16 +7119,16 @@ export default function App() {
         onClick={onClick}
         disabled={disabled}
         title={title}
-        className={`flex flex-col items-center justify-start w-[68px] h-[68px] rounded-lg border ${
+        className={`flex flex-col items-center justify-start w-[58px] h-[64px] rounded-lg border ${
           disabled 
             ? 'opacity-40 cursor-not-allowed border-transparent bg-gray-50' 
             : active 
               ? 'bg-indigo-50 border-indigo-300 shadow-inner' 
               : 'border-transparent hover:bg-white hover:border-indigo-200 hover:shadow-sm'
-        } p-1 pt-1.5 gap-1 transition-all relative overflow-hidden group ${className}`}
+        } p-1 pt-1.5 gap-1 transition-all relative overflow-hidden group cursor-pointer ${className}`}
       >
         {!active && !disabled && <div className="absolute inset-0 bg-indigo-50 opacity-0 group-hover:opacity-100 transition-opacity z-0"></div>}
-        <Icon className={`w-6 h-6 z-10 ${disabled ? 'text-gray-400' : active ? 'text-indigo-700 drop-shadow-sm' : 'text-gray-700 group-hover:text-indigo-600'}`} strokeWidth={1.5} />
+        <Icon className={`w-5 h-5 z-10 ${disabled ? 'text-gray-400' : active ? 'text-indigo-700 drop-shadow-sm' : 'text-gray-700 group-hover:text-indigo-600'}`} strokeWidth={1.5} />
         <span className={`text-[10px] whitespace-normal font-medium leading-[1.1] text-center z-10 ${disabled ? 'text-gray-400' : active ? 'text-indigo-800' : 'text-gray-700'}`}>
            {lines.map((l: string, i: number) => <React.Fragment key={i}>{l}{i < lines.length - 1 && <br/>}</React.Fragment>)}
         </span>
