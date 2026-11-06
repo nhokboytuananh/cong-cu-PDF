@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Trash2, RotateCcw, RotateCw, ArrowUp, ArrowDown, FilePlus, X, CheckSquare, Square, Check, Lock
 } from 'lucide-react';
@@ -16,6 +16,7 @@ interface PageThumbnailSidebarProps {
   onMovePages: (sourceIndices: number[], targetIndex: number) => void;
   onRotatePages: (indices: number[], deltaDegrees: number) => void;
   onAddPageClick: () => void;
+  onDropPdfFiles?: (files: File[], targetIndex?: number, firstFileHandlePromise?: Promise<any> | null) => void;
   onClose: () => void;
   isDigitallySigned: boolean;
 }
@@ -32,12 +33,43 @@ export const PageThumbnailSidebar: React.FC<PageThumbnailSidebarProps> = ({
   onMovePages,
   onRotatePages,
   onAddPageClick,
+  onDropPdfFiles,
   onClose,
   isDigitallySigned,
 }) => {
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [dropPosition, setDropPosition] = useState<'before' | 'after'>('before');
+  const [isFileDragOverContainer, setIsFileDragOverContainer] = useState(false);
+
+  const listContainerRef = useRef<HTMLDivElement | null>(null);
+  const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  // Tự động cuộn danh sách hình thu nhỏ theo trang hiện tại khi người dùng lăn chuột trên vùng xem chính
+  useEffect(() => {
+    const container = listContainerRef.current;
+    const targetIndex = currentPage - 1;
+    const targetEl = itemRefs.current[targetIndex];
+    if (!container || !targetEl) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const targetRect = targetEl.getBoundingClientRect();
+
+    const pad = 16;
+    if (targetRect.top < containerRect.top + pad) {
+      const delta = targetRect.top - (containerRect.top + pad);
+      container.scrollTo({
+        top: Math.max(0, container.scrollTop + delta),
+        behavior: 'smooth',
+      });
+    } else if (targetRect.bottom > containerRect.bottom - pad) {
+      const delta = targetRect.bottom - (containerRect.bottom - pad);
+      container.scrollTo({
+        top: container.scrollTop + delta,
+        behavior: 'smooth',
+      });
+    }
+  }, [currentPage, pages.length]);
 
   const hasSelection = selectedPageIndices.length > 0;
   const allSelected = pages.length > 0 && selectedPageIndices.length === pages.length;
@@ -98,7 +130,8 @@ export const PageThumbnailSidebar: React.FC<PageThumbnailSidebarProps> = ({
   const handleDragOver = (e: React.DragEvent, index: number) => {
     if (isDigitallySigned) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
+    const isExternalFiles = Array.from(e.dataTransfer.types || []).includes('Files');
+    e.dataTransfer.dropEffect = isExternalFiles ? 'copy' : 'move';
 
     const rect = e.currentTarget.getBoundingClientRect();
     const midY = rect.top + rect.height / 2;
@@ -114,6 +147,26 @@ export const PageThumbnailSidebar: React.FC<PageThumbnailSidebarProps> = ({
 
   const handleDrop = (e: React.DragEvent, targetIndex: number) => {
     e.preventDefault();
+    const droppedFiles = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+    if (droppedFiles.length > 0) {
+      e.stopPropagation();
+      let firstHandlePromise: Promise<any> | null = null;
+      try {
+        const firstItem = e.dataTransfer.items?.[0] as any;
+        if (firstItem && typeof firstItem.getAsFileSystemHandle === 'function') {
+          firstHandlePromise = firstItem.getAsFileSystemHandle();
+        }
+      } catch {}
+      const effectiveTarget = dropPosition === 'before' ? targetIndex : targetIndex + 1;
+      setIsFileDragOverContainer(false);
+      setDraggedIndex(null);
+      setDragOverIndex(null);
+      if (!isDigitallySigned && onDropPdfFiles) {
+        onDropPdfFiles(droppedFiles, effectiveTarget, firstHandlePromise);
+      }
+      return;
+    }
+
     if (isDigitallySigned || draggedIndex === null) {
       setDraggedIndex(null);
       setDragOverIndex(null);
@@ -148,18 +201,18 @@ export const PageThumbnailSidebar: React.FC<PageThumbnailSidebarProps> = ({
   };
 
   return (
-    <div className="w-[240px] flex-shrink-0 bg-[#f8f9fa] border-r border-gray-300 flex flex-col h-full select-none z-30 shadow-md">
+    <div className="w-[198px] flex-shrink-0 bg-[#f8f9fa] border-r border-gray-300 flex flex-col h-full select-none z-30 shadow-md">
       {/* Sidebar Header */}
-      <div className="px-3 py-2.5 bg-gradient-to-r from-gray-100 to-gray-50 border-b border-gray-200 flex items-center justify-between">
-        <div className="flex items-center gap-1.5">
-          <span className="font-bold text-xs text-gray-800 tracking-wide uppercase">
+      <div className="px-2.5 py-2 bg-gradient-to-r from-gray-100 to-gray-50 border-b border-gray-200 flex items-center justify-between">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="font-bold text-[11px] text-gray-800 tracking-wide uppercase">
             TRANG
           </span>
-          <span className="text-[11px] font-semibold text-gray-500 bg-gray-200/80 px-1.5 py-0.5 rounded-full">
+          <span className="text-[10px] font-semibold text-gray-500 bg-gray-200/80 px-1.5 py-0.5 rounded-full">
             {pages.length}
           </span>
           {hasSelection && (
-            <span className="text-[10px] font-bold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded-full">
+            <span className="text-[10px] font-bold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded-full truncate">
               Đã chọn: {selectedPageIndices.length}
             </span>
           )}
@@ -174,15 +227,15 @@ export const PageThumbnailSidebar: React.FC<PageThumbnailSidebarProps> = ({
           type="button"
           onClick={onClose}
           title="Đóng bảng trang"
-          className="p-1 hover:bg-gray-200 text-gray-400 hover:text-gray-700 rounded transition-colors"
+          className="p-1 hover:bg-gray-200 text-gray-400 hover:text-gray-700 rounded transition-colors shrink-0"
         >
-          <X className="w-4 h-4" />
+          <X className="w-3.5 h-3.5" />
         </button>
       </div>
 
       {/* Action Toolbar */}
-      <div className="px-2 py-1.5 bg-white border-b border-gray-200 flex items-center justify-between gap-1 shadow-xs">
-        <div className="flex items-center gap-1">
+      <div className="px-2 py-1 bg-white border-b border-gray-200 flex items-center justify-between gap-0.5 shadow-xs">
+        <div className="flex items-center gap-0.5">
           {/* Add Page */}
           <button
             type="button"
@@ -191,7 +244,7 @@ export const PageThumbnailSidebar: React.FC<PageThumbnailSidebarProps> = ({
             title={isDigitallySigned ? "Tài liệu đã ký số (không thể chèn thêm trang)" : "Thêm các trang từ tệp PDF khác"}
             className="p-1 text-indigo-600 hover:bg-indigo-50 hover:text-indigo-800 rounded transition-colors disabled:opacity-30 disabled:pointer-events-none"
           >
-            <FilePlus className="w-4 h-4" />
+            <FilePlus className="w-3.5 h-3.5" />
           </button>
 
           {/* Delete Selected Pages */}
@@ -210,10 +263,10 @@ export const PageThumbnailSidebar: React.FC<PageThumbnailSidebarProps> = ({
             }
             className="p-1 text-red-600 hover:bg-red-50 hover:text-red-800 rounded transition-colors disabled:opacity-30 disabled:pointer-events-none"
           >
-            <Trash2 className="w-4 h-4" />
+            <Trash2 className="w-3.5 h-3.5" />
           </button>
 
-          <div className="w-px h-4 bg-gray-200 mx-0.5" />
+          <div className="w-px h-3.5 bg-gray-200 mx-0.5" />
 
           {/* Rotate CCW */}
           <button
@@ -243,7 +296,7 @@ export const PageThumbnailSidebar: React.FC<PageThumbnailSidebarProps> = ({
             <RotateCw className="w-3.5 h-3.5" />
           </button>
 
-          <div className="w-px h-4 bg-gray-200 mx-0.5" />
+          <div className="w-px h-3.5 bg-gray-200 mx-0.5" />
 
           {/* Move Up */}
           <button
@@ -275,19 +328,59 @@ export const PageThumbnailSidebar: React.FC<PageThumbnailSidebarProps> = ({
           title={allSelected ? 'Bỏ chọn tất cả' : 'Chọn tất cả các trang (Ctrl+A)'}
           className="p-1 text-gray-500 hover:bg-gray-100 hover:text-indigo-600 rounded transition-colors"
         >
-          {allSelected ? <CheckSquare className="w-4 h-4 text-indigo-600" /> : <Square className="w-4 h-4" />}
+          {allSelected ? <CheckSquare className="w-3.5 h-3.5 text-indigo-600" /> : <Square className="w-3.5 h-3.5" />}
         </button>
       </div>
 
       {/* Keyboard instructions tip */}
-      <div className="px-3 py-1 bg-indigo-50/50 border-b border-indigo-100/60 text-[10px] text-gray-500 flex items-center justify-between">
+      <div className="px-2.5 py-1 bg-indigo-50/50 border-b border-indigo-100/60 text-[9.5px] text-gray-500 flex items-center justify-between">
         <span>
           <kbd className="bg-white border border-gray-300 px-1 py-0.2 rounded font-sans text-[9px] font-semibold text-gray-700">Shift</kbd> chọn liên tiếp, <kbd className="bg-white border border-gray-300 px-1 py-0.2 rounded font-sans text-[9px] font-semibold text-gray-700">Ctrl</kbd> chọn lẻ
         </span>
       </div>
 
       {/* Thumbnails Scrollable List */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-4">
+      <div
+        ref={listContainerRef}
+        onDragOver={(e) => {
+          if (isDigitallySigned) return;
+          const isExternalFiles = Array.from(e.dataTransfer.types || []).includes('Files');
+          if (isExternalFiles) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+            if (!isFileDragOverContainer) setIsFileDragOverContainer(true);
+          }
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+            setIsFileDragOverContainer(false);
+            setDragOverIndex(null);
+          }
+        }}
+        onDrop={(e) => {
+          const droppedFiles = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+          if (droppedFiles.length > 0) {
+            e.preventDefault();
+            e.stopPropagation();
+            let firstHandlePromise: Promise<any> | null = null;
+            try {
+              const firstItem = e.dataTransfer.items?.[0] as any;
+              if (firstItem && typeof firstItem.getAsFileSystemHandle === 'function') {
+                firstHandlePromise = firstItem.getAsFileSystemHandle();
+              }
+            } catch {}
+            setIsFileDragOverContainer(false);
+            setDraggedIndex(null);
+            setDragOverIndex(null);
+            if (!isDigitallySigned && onDropPdfFiles) {
+              onDropPdfFiles(droppedFiles, pages.length, firstHandlePromise);
+            }
+          }
+        }}
+        className={`flex-1 overflow-y-auto p-2.5 space-y-2.5 transition-colors ${
+          isFileDragOverContainer ? 'bg-indigo-50/70 ring-2 ring-inset ring-indigo-400' : ''
+        }`}
+      >
         {pages.length === 0 ? (
           <div className="text-center py-10 px-2 text-gray-400 text-xs">
             <p>Chưa có trang PDF nào.</p>
@@ -306,16 +399,19 @@ export const PageThumbnailSidebar: React.FC<PageThumbnailSidebarProps> = ({
             return (
               <div
                 key={i}
+                ref={(el) => {
+                  itemRefs.current[i] = el;
+                }}
                 draggable={!isDigitallySigned}
                 onDragStart={(e) => handleDragStart(e, i)}
                 onDragOver={(e) => handleDragOver(e, i)}
                 onDragLeave={handleDragLeave}
                 onDrop={(e) => handleDrop(e, i)}
-                className="relative group/thumb"
+                className="relative group/thumb max-w-[152px] mx-auto"
               >
                 {/* Drop Indicator (Before) */}
                 {isDragOverThis && dropPosition === 'before' && (
-                  <div className="absolute -top-2 left-0 right-0 h-1 bg-indigo-600 rounded-full z-40 shadow-sm" />
+                  <div className="absolute -top-1.5 left-0 right-0 h-1 bg-indigo-600 rounded-full z-40 shadow-sm" />
                 )}
 
                 {/* Thumbnail Card */}
@@ -325,28 +421,28 @@ export const PageThumbnailSidebar: React.FC<PageThumbnailSidebarProps> = ({
                     isSelected
                       ? 'border-indigo-600 bg-indigo-50/70 shadow-md ring-2 ring-indigo-200'
                       : isCurrentInView
-                      ? 'border-blue-400 shadow-sm'
+                      ? 'border-blue-500 bg-blue-50/40 shadow-sm ring-1 ring-blue-200'
                       : 'border-gray-200 hover:border-gray-300 hover:shadow-xs'
                   } ${draggedIndex === i ? 'opacity-40' : 'opacity-100'}`}
                 >
                   {/* Selection Checkmark Badge */}
                   <div
-                    className={`absolute top-2.5 right-2.5 z-20 w-5 h-5 rounded-md flex items-center justify-center transition-all ${
+                    className={`absolute top-2 right-2 z-20 w-4 h-4 rounded flex items-center justify-center transition-all ${
                       isSelected
                         ? 'bg-indigo-600 text-white shadow'
                         : 'bg-white/90 border border-gray-300 text-transparent opacity-0 group-hover/thumb:opacity-100 hover:border-indigo-500'
                     }`}
                   >
-                    <Check className="w-3.5 h-3.5 stroke-[3]" />
+                    <Check className="w-3 h-3 stroke-[3]" />
                   </div>
 
                   {/* Digitally Signed Lock indicator */}
                   {isDigitallySigned && (
                     <div
-                      className="absolute top-2.5 left-2.5 z-20 bg-amber-500 text-white p-1 rounded shadow-xs"
+                      className="absolute top-2 left-2 z-20 bg-amber-500 text-white p-0.5 rounded shadow-xs"
                       title="Trang thuộc tài liệu đã ký số"
                     >
-                      <Lock className="w-3 h-3" />
+                      <Lock className="w-2.5 h-2.5" />
                     </div>
                   )}
 
@@ -380,13 +476,13 @@ export const PageThumbnailSidebar: React.FC<PageThumbnailSidebarProps> = ({
                   </div>
 
                   {/* Page Label & Quick Actions */}
-                  <div className="mt-1.5 flex items-center justify-between px-1">
+                  <div className="mt-1 flex items-center justify-between px-0.5">
                     <span
-                      className={`text-xs font-semibold ${
+                      className={`text-[11px] font-semibold ${
                         isSelected
                           ? 'text-indigo-700 font-bold'
                           : isCurrentInView
-                          ? 'text-blue-700'
+                          ? 'text-blue-700 font-bold'
                           : 'text-gray-600'
                       }`}
                     >
@@ -404,7 +500,7 @@ export const PageThumbnailSidebar: React.FC<PageThumbnailSidebarProps> = ({
                           className="p-0.5 text-gray-400 hover:text-red-600 rounded"
                           title="Xóa trang này"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          <Trash2 className="w-3 h-3" />
                         </button>
                       )}
                     </div>
@@ -413,7 +509,7 @@ export const PageThumbnailSidebar: React.FC<PageThumbnailSidebarProps> = ({
 
                 {/* Drop Indicator (After) */}
                 {isDragOverThis && dropPosition === 'after' && (
-                  <div className="absolute -bottom-2 left-0 right-0 h-1 bg-indigo-600 rounded-full z-40 shadow-sm" />
+                  <div className="absolute -bottom-1.5 left-0 right-0 h-1 bg-indigo-600 rounded-full z-40 shadow-sm" />
                 )}
               </div>
             );

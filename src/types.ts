@@ -1,3 +1,12 @@
+export type TextSpan = {
+  text: string;
+  fontFamily?: string;
+  fontSize?: number;
+  color?: string;
+  isBold?: boolean;
+  isItalic?: boolean;
+};
+
 export type PdfTextItem = {
   id: string;
   text: string;
@@ -24,6 +33,7 @@ export type PdfTextItem = {
   hasBackground?: boolean;
   rotation?: number;
   baselineY?: number;
+  spans?: TextSpan[];
 };
 
 export type Field = {
@@ -44,6 +54,8 @@ export type PdfPage = {
   width: number;
   height: number;
   dataUrl: string;
+  viewBox?: [number, number, number, number];
+  pageRotation?: number;
 };
 
 export type HighlightItem = {
@@ -69,12 +81,14 @@ export type TextBoxItem = {
   text: string;
   fontFamily: string;
   fontSize: number;
+  lineHeight?: number;
   isBold?: boolean;
   isItalic?: boolean;
   color: string;
   textAlign?: 'left' | 'center' | 'right';
   hasBackground: boolean; // true = nền trắng (white), false = trong suốt (transparent)
   hasBorder?: boolean; // true = có viền, false = không viền
+  spans?: TextSpan[];
 };
 
 export type ShapeItem = {
@@ -90,3 +104,15 @@ export type ShapeItem = {
   strokeStyle?: 'solid' | 'dashed' | 'dotted';
   fillColor?: 'transparent' | 'light' | 'white';
 };
+
+export type PdfImageItem = {
+  id: string;
+  pageIndex: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  aspectRatio: number;
+  dataUrl: string;
+};
+

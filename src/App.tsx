@@ -2,11 +2,11 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { 
   PenSquare, Layout, FileDown, X, MousePointer2, FileUp, Loader2, FilePlus, Trash2, Type, ArrowUp, ArrowDown, Edit, HelpCircle, Info, CheckCircle2, MousePointerClick,
   RotateCcw, RotateCw, PanelLeft, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Bold, Italic, Check, Sparkles, Highlighter, Eraser,
-  AlignLeft, AlignCenter, AlignRight, Square, Circle, ShieldAlert, Lock, Undo2, Redo2
+  AlignLeft, AlignCenter, AlignRight, Square, Circle, ShieldAlert, Lock, Undo2, Redo2, Save, ChevronDown, FolderOpen, ExternalLink, Image as ImageIcon
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import * as pdfLib from 'pdf-lib';
@@ -14,7 +14,7 @@ import { PDFDocument } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import { PageThumbnailSidebar } from './components/PageThumbnailSidebar';
 import { ZoomControls } from './components/ZoomControls';
-import { HighlightItem, TextBoxItem, ShapeItem } from './types';
+import { HighlightItem, TextBoxItem, ShapeItem, PdfImageItem, TextSpan } from './types';
 
 // Configure pdfjs worker url
 // @ts-ignore
@@ -28,6 +28,7 @@ type PdfTextItem = {
   x: number;
   y: number;
   width: number;
+  originalWidth?: number;
   height: number;
   fontSize: number;
   fontName: string;
@@ -37,6 +38,7 @@ type PdfTextItem = {
   pdfY: number;
   pdfWidth: number;
   pdfHeight: number;
+  baselineY?: number;
   // Custom Styles
   customFontFamily?: string;
   customFontSize?: number;
@@ -47,7 +49,74 @@ type PdfTextItem = {
   offsetY?: number;
   hasBackground?: boolean;
   rotation?: number;
+  spans?: TextSpan[];
 };
+
+const IDB_DB_NAME = 'qnpc_pdf_editor_db';
+const IDB_STORE_NAME = 'active_session';
+
+async function saveSessionToIndexedDB(sessionData: any): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(IDB_DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE_NAME)) {
+          db.createObjectStore(IDB_STORE_NAME);
+        }
+      };
+      req.onsuccess = () => {
+        try {
+          const db = req.result;
+          const tx = db.transaction(IDB_STORE_NAME, 'readwrite');
+          tx.objectStore(IDB_STORE_NAME).put(sessionData, 'current');
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+        } catch {
+          resolve();
+        }
+      };
+      req.onerror = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
+
+async function loadSessionFromIndexedDB(): Promise<any | null> {
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(IDB_DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IDB_STORE_NAME)) {
+          db.createObjectStore(IDB_STORE_NAME);
+        }
+      };
+      req.onsuccess = () => {
+        try {
+          const db = req.result;
+          const tx = db.transaction(IDB_STORE_NAME, 'readwrite');
+          const store = tx.objectStore(IDB_STORE_NAME);
+          const getReq = store.get('current');
+          getReq.onsuccess = () => {
+            const res = getReq.result || null;
+            if (res) {
+              try { store.delete('current'); } catch {}
+            }
+            resolve(res);
+          };
+          getReq.onerror = () => resolve(null);
+        } catch {
+          resolve(null);
+        }
+      };
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
 
 export const HIGHLIGHT_COLORS = [
   { name: 'Vàng', label: 'Vàng', hex: '#fde047', color: '#fde047', bgClass: 'bg-yellow-300' },
@@ -87,34 +156,52 @@ type PdfPage = {
   width: number;
   height: number;
   dataUrl: string;
+  viewBox?: [number, number, number, number];
+  pageRotation?: number;
 };
 
-const checkIsDigitallySigned = (uint8Array: Uint8Array): boolean => {
-  try {
-    const decoder = new TextDecoder('utf-8', { fatal: false });
-    const text = decoder.decode(uint8Array);
-    
-    // Digital signatures always have a /Type /Sig and /ByteRange entry.
-    // Also check for standard signature dictionary keys or digital signature structures.
-    const hasSigType = text.includes('/Type /Sig') || text.includes('/Type/Sig');
-    const hasByteRange = text.includes('/ByteRange');
-    
-    return hasSigType && hasByteRange;
-  } catch (e) {
-    console.error("Error checking for digital signature:", e);
-    return false;
-  }
+const checkIsDigitallySigned = (_uint8Array: Uint8Array): boolean => {
+  // Mở khóa hoàn toàn để tài liệu đã ký số vẫn có thể chỉnh sửa chữ và thao tác bình thường
+  return false;
 };
 
 export const getCleanFontDisplayName = (fontName?: string): string => {
   const name = (fontName || '').toLowerCase();
+  // Ưu tiên kiểm tra Times New Roman / Serif trước tiên (tránh bị chuỗi fallback "sans-serif" của PDF.js ghi đè thành Arial)
+  if (
+    name.includes('times') ||
+    name.includes('roman') ||
+    name.includes('tinos') ||
+    name.includes('cambria') ||
+    name.includes('georgia') ||
+    name.includes('garamond') ||
+    name.includes('palatino') ||
+    name.includes('minion') ||
+    name.includes('bookman') ||
+    name.includes('vntime')
+  ) {
+    return 'Times New Roman';
+  }
   if (name.includes('courier') || name.includes('mono') || name.includes('consolas')) {
     return 'Courier New';
   }
   if (name.includes('roboto')) {
     return 'Roboto';
   }
-  if (name.includes('arial') || name.includes('arimo') || name.includes('helvetica') || name.includes('calibri') || name.includes('tahoma') || name.includes('vnarial') || name.includes('sans')) {
+  if (
+    name.includes('arial') ||
+    name.includes('arimo') ||
+    name.includes('helvetica') ||
+    name.includes('calibri') ||
+    name.includes('tahoma') ||
+    name.includes('verdana') ||
+    name.includes('vnarial') ||
+    name.includes('segoe') ||
+    name.includes('trebuchet') ||
+    name.includes('opensans') ||
+    name.includes('simplex') ||
+    name.includes('isocp')
+  ) {
     return 'Arial';
   }
   // Tiêu chuẩn hành chính VN (Nghị định 30/2020/NĐ-CP): Times New Roman
@@ -122,14 +209,14 @@ export const getCleanFontDisplayName = (fontName?: string): string => {
 };
 
 export const getFontFamily = (fontName?: string): string => {
-  const name = (fontName || '').toLowerCase();
-  if (name.includes('courier') || name.includes('mono') || name.includes('consolas')) {
+  const clean = getCleanFontDisplayName(fontName);
+  if (clean === 'Courier New') {
     return '"Courier New", Courier, monospace';
   }
-  if (name.includes('roboto')) {
+  if (clean === 'Roboto') {
     return '"Roboto", sans-serif';
   }
-  if (name.includes('arial') || name.includes('arimo') || name.includes('helvetica') || name.includes('calibri') || name.includes('tahoma') || name.includes('vnarial') || name.includes('sans')) {
+  if (clean === 'Arial') {
     return 'Arial, Helvetica, "Arimo", sans-serif';
   }
   // Ưu tiên font Times New Roman chuẩn, không fallback sang Tinos gây biến dạng dấu tiếng Việt
@@ -138,6 +225,7 @@ export const getFontFamily = (fontName?: string): string => {
 
 export function detectFontProperties(item: any, textContent: any, page: any, pdf: any) {
   let rawName = '';
+  let loadedName = '';
   let isBold = false;
   let isItalic = false;
 
@@ -149,53 +237,61 @@ export function detectFontProperties(item: any, textContent: any, page: any, pdf
       if (font) {
         if (font.name) rawName = font.name;
         else if (font.fallbackName) rawName = font.fallbackName;
+        if (font.loadedName) loadedName = font.loadedName;
         if (font.bold !== undefined) isBold = Boolean(font.bold);
         if (font.italic !== undefined) isItalic = Boolean(font.italic);
         if (font.black) isBold = true;
-        if (font.weight && (font.weight >= 600 || font.weight === 'bold')) isBold = true;
+        if (font.weight && (Number(font.weight) >= 600 || font.weight === 'bold')) isBold = true;
       }
     }
   } catch (e) {
     // ignore
   }
 
-  // 2. Thử lấy từ textContent.styles
+  // 2. Lấy thêm thông tin từ textContent.styles nếu chưa có rawName
   if (!rawName && textContent?.styles?.[item.fontName]) {
     const style = textContent.styles[item.fontName];
-    rawName = style.fontFamily || '';
+    if (style?.fontFamily && style.fontFamily !== 'sans-serif' && style.fontFamily !== 'serif') {
+      rawName = style.fontFamily;
+    }
   }
 
   if (!rawName) {
-    rawName = item.fontName || '';
+    rawName = loadedName || item.fontName || '';
+  }
+
+  // Kiểm tra độ nghiêng hình học (italic shear) cho dòng chữ ngang
+  if (Array.isArray(item.transform) && item.transform.length >= 4) {
+    const rotB = Number(item.transform[1]) || 0;
+    const shearX = Number(item.transform[2]) || 0;
+    const scaleY = Number(item.transform[3]) || 1;
+    if (Math.abs(rotB) < 0.01 && Math.abs(shearX) > Math.abs(scaleY) * 0.15) {
+      isItalic = true;
+    }
   }
 
   // Tẩy tiền tố subset ngẫu nhiên như "ABCDEF+TimesNewRomanPSMT" -> "TimesNewRomanPSMT"
   const cleanName = (rawName || '').replace(/^[A-Z]{6}\+/, '');
-  const lower = cleanName ? cleanName.toLowerCase() : '';
+  const cleanLower = cleanName.toLowerCase();
 
-  // Nhận diện chữ Đậm (Bold)
+  // Nhận diện chữ Đậm (Bold) chính xác theo tên phông chữ thực tế
   if (
-    lower.includes('bold') ||
-    lower.includes('black') ||
-    lower.includes('heavy') ||
-    lower.includes('-b') ||
-    lower.includes('_b') ||
-    lower.includes('bd') ||
-    lower.includes('w7') ||
-    lower.includes('w8') ||
-    lower.includes('w9')
+    cleanLower.includes('bold') ||
+    cleanLower.includes('black') ||
+    cleanLower.includes('heavy') ||
+    cleanLower.includes('semibold') ||
+    cleanLower.includes('demi') ||
+    /([-_,+]|^)(b|bd|bi|w7|w8|w9)([-_,+]|$|mt)/i.test(cleanName)
   ) {
     isBold = true;
   }
 
-  // Nhận diện chữ Nghiêng (Italic)
+  // Nhận diện chữ Nghiêng (Italic) chính xác theo tên phông chữ thực tế (tránh nhầm với Identity-H, Composite, Calibri)
   if (
-    lower.includes('italic') ||
-    lower.includes('oblique') ||
-    lower.includes('-i') ||
-    lower.includes('_i') ||
-    lower.includes('it') ||
-    lower.includes('slanted')
+    cleanLower.includes('italic') ||
+    cleanLower.includes('oblique') ||
+    cleanLower.includes('slanted') ||
+    /([-_,+]|^)(i|it|bi)([-_,+]|$|mt)/i.test(cleanName)
   ) {
     isItalic = true;
   }
@@ -252,6 +348,14 @@ export default function App() {
   const [selectedPageIndices, setSelectedPageIndices] = useState<number[]>([]);
   const [lastSelectedPageIndex, setLastSelectedPageIndex] = useState<number | null>(null);
   const [zoom, setZoom] = useState<number>(1.0);
+  const zoomRef = useRef<number>(1.0);
+  const zoomAnchorRef = useRef<{
+    pageIndex: number;
+    pagePointX: number;
+    pagePointY: number;
+    anchorClientX: number;
+    anchorClientY: number;
+  } | null>(null);
   const [showPageSidebar, setShowPageSidebar] = useState<boolean>(true);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const [pdfTexts, setPdfTexts] = useState<PdfTextItem[]>([]);
@@ -261,6 +365,66 @@ export default function App() {
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
   const [exportFilename, setExportFilename] = useState<string>('');
   const [showSignedWarningModal, setShowSignedWarningModal] = useState<boolean>(false);
+
+  // Direct File System Access API state (Lưu trực tiếp lên tệp gốc như phần mềm cài trên máy)
+  const fileHandleRef = useRef<any>(null);
+  const [hasDirectFileHandle, setHasDirectFileHandle] = useState<boolean>(false);
+  const [showSaveDropdown, setShowSaveDropdown] = useState<boolean>(false);
+  const saveDropdownRef = useRef<HTMLDivElement>(null);
+  const [saveToast, setSaveToast] = useState<{ title: string; subtitle: string } | null>(null);
+  const saveToastTimerRef = useRef<number | null>(null);
+  const [isInIframe] = useState<boolean>(() => {
+    try {
+      return window.self !== window.top;
+    } catch {
+      return true;
+    }
+  });
+  const [pendingDirectSaveBytes, setPendingDirectSaveBytes] = useState<{ bytes: Uint8Array; filename: string } | null>(null);
+  const [isWorkspaceDragOver, setIsWorkspaceDragOver] = useState<boolean>(false);
+  const [isModalDropDragOver, setIsModalDropDragOver] = useState<boolean>(false);
+
+  const triggerSaveToast = (title: string, subtitle: string) => {
+    if (saveToastTimerRef.current) {
+      window.clearTimeout(saveToastTimerRef.current);
+    }
+    setSaveToast({ title, subtitle });
+    saveToastTimerRef.current = window.setTimeout(() => {
+      setSaveToast(null);
+    }, 3800);
+  };
+
+  const handleOpenInStandaloneTab = async (overrideBytes?: Uint8Array) => {
+    try {
+      const bufToSave = overrideBytes || originalPdfBuffer;
+      if (bufToSave) {
+        await saveSessionToIndexedDB({
+          pdfBytes: bufToSave,
+          documentName,
+          highlights,
+          shapes,
+          fields,
+          pdfTexts: overrideBytes ? [] : pdfTexts.filter(t => t.isModified),
+          activeTool,
+        });
+      }
+    } catch {}
+    window.open(window.location.href, '_blank', 'noopener,noreferrer');
+  };
+
+  useEffect(() => {
+    const handleClickOutsideSaveMenu = (e: MouseEvent) => {
+      if (saveDropdownRef.current && !saveDropdownRef.current.contains(e.target as Node)) {
+        setShowSaveDropdown(false);
+      }
+    };
+    if (showSaveDropdown) {
+      document.addEventListener('mousedown', handleClickOutsideSaveMenu);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutsideSaveMenu);
+    };
+  }, [showSaveDropdown]);
 
   const [showHelpModal, setShowHelpModal] = useState<boolean>(false);
   const [activeHelpTab, setActiveHelpTab] = useState<'document' | 'fields' | 'edit_text' | 'highlights' | 'shapes' | 'export_overwrite'>('document');
@@ -293,6 +457,7 @@ export default function App() {
   const [editingTextBoxId, setEditingTextBoxId] = useState<string | null>(null);
   const [tbFontFamily, setTbFontFamily] = useState<string>('Times New Roman');
   const [tbFontSize, setTbFontSize] = useState<number>(12);
+  const [tbLineHeight, setTbLineHeight] = useState<number>(1.25);
   const [tbIsBold, setTbIsBold] = useState<boolean>(false);
   const [tbIsItalic, setTbIsItalic] = useState<boolean>(false);
   const [tbColor, setTbColor] = useState<string>('#000000');
@@ -301,6 +466,8 @@ export default function App() {
   const [tbHasBorder, setTbHasBorder] = useState<boolean>(false); // false = không viền, true = có viền
   const [deletedTextBoxes, setDeletedTextBoxes] = useState<TextBoxItem[]>([]);
   const initialLoadedTextBoxesRef = useRef<TextBoxItem[]>([]);
+  const [editSelectionRange, setEditSelectionRange] = useState<{ id: string; start: number; end: number } | null>(null);
+  const [tbSelectionRange, setTbSelectionRange] = useState<{ id: string; start: number; end: number } | null>(null);
   const [textBoxInteraction, setTextBoxInteraction] = useState<{
     id: string;
     type: 'drag' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
@@ -319,6 +486,7 @@ export default function App() {
       if (tb) {
         setTbFontFamily(tb.fontFamily || 'Times New Roman');
         setTbFontSize(tb.fontSize || 12);
+        setTbLineHeight(tb.lineHeight || 1.25);
         setTbIsBold(!!tb.isBold);
         setTbIsItalic(!!tb.isItalic);
         setTbColor(tb.color || '#000000');
@@ -326,15 +494,394 @@ export default function App() {
         setTbHasBackground(!!tb.hasBackground);
         setTbHasBorder(!!tb.hasBorder);
       }
+    } else {
+      setTbSelectionRange(null);
     }
   }, [selectedTextBoxId]);
 
+  const getNormalizedTextBoxSpans = (tb: TextBoxItem): TextSpan[] => {
+    if (tb.spans && tb.spans.length > 0 && tb.spans.map(s => s.text).join('') === tb.text) {
+      return tb.spans;
+    }
+    return [
+      {
+        text: tb.text,
+        fontFamily: tb.fontFamily || 'Times New Roman',
+        fontSize: tb.fontSize || 12,
+        color: tb.color || '#000000',
+        isBold: !!tb.isBold,
+        isItalic: !!tb.isItalic,
+      },
+    ];
+  };
+
+  const reconcileTextBoxSpansWithNewText = (tb: TextBoxItem, newText: string): TextSpan[] | undefined => {
+    if (!tb.spans || tb.spans.length === 0) return undefined;
+    const oldText = tb.spans.map(s => s.text).join('');
+    if (oldText === newText) return tb.spans;
+    if (!newText) return [];
+
+    let prefixLen = 0;
+    const minLen = Math.min(oldText.length, newText.length);
+    while (prefixLen < minLen && oldText[prefixLen] === newText[prefixLen]) {
+      prefixLen++;
+    }
+
+    let oldSuffixIdx = oldText.length;
+    let newSuffixIdx = newText.length;
+    while (
+      oldSuffixIdx > prefixLen &&
+      newSuffixIdx > prefixLen &&
+      oldText[oldSuffixIdx - 1] === newText[newSuffixIdx - 1]
+    ) {
+      oldSuffixIdx--;
+      newSuffixIdx--;
+    }
+
+    const result: TextSpan[] = [];
+    let pos = 0;
+    let middleStyle: Omit<TextSpan, 'text'> = {
+      fontFamily: tb.fontFamily || 'Times New Roman',
+      fontSize: tb.fontSize || 12,
+      color: tb.color || '#000000',
+      isBold: !!tb.isBold,
+      isItalic: !!tb.isItalic,
+    };
+
+    for (const s of tb.spans) {
+      const segStart = pos;
+      const segEnd = pos + s.text.length;
+      if (segStart <= prefixLen && prefixLen <= segEnd) {
+        middleStyle = {
+          fontFamily: s.fontFamily,
+          fontSize: s.fontSize,
+          color: s.color,
+          isBold: s.isBold,
+          isItalic: s.isItalic,
+        };
+      }
+      if (segStart < prefixLen) {
+        const takeEnd = Math.min(segEnd, prefixLen);
+        result.push({ ...s, text: s.text.slice(0, takeEnd - segStart) });
+      }
+      pos = segEnd;
+    }
+
+    const insertedMiddle = newText.slice(prefixLen, newSuffixIdx);
+    if (insertedMiddle) {
+      result.push({ ...middleStyle, text: insertedMiddle });
+    }
+
+    pos = 0;
+    for (const s of tb.spans) {
+      const segStart = pos;
+      const segEnd = pos + s.text.length;
+      if (segEnd > oldSuffixIdx) {
+        const takeStart = Math.max(segStart, oldSuffixIdx);
+        result.push({ ...s, text: s.text.slice(takeStart - segStart) });
+      }
+      pos = segEnd;
+    }
+
+    return result.filter(s => s.text.length > 0);
+  };
+
+  const wrapTextBoxSpansToLines = (tb: TextBoxItem): TextSpan[][] => {
+    const spans = getNormalizedTextBoxSpans(tb);
+    const maxLineW = Math.max(12, tb.width - 8);
+    let ctx: CanvasRenderingContext2D | null = null;
+    try {
+      const canvas = document.createElement('canvas');
+      ctx = canvas.getContext('2d');
+    } catch (e) {}
+
+    const measureSpanTokenWidth = (seg: TextSpan): number => {
+      const szPx = (seg.fontSize || tb.fontSize || 12) * 1.5;
+      const ff = getFontFamily(seg.fontFamily || tb.fontFamily || 'Times New Roman');
+      const b = seg.isBold ?? tb.isBold;
+      const it = seg.isItalic ?? tb.isItalic;
+      if (ctx) {
+        ctx.font = `${it ? 'italic ' : ''}${b ? '700 ' : '400 '}${szPx}px ${ff}`;
+        return ctx.measureText(seg.text).width;
+      }
+      return seg.text.length * (szPx * 0.52);
+    };
+
+    // Split spans into paragraphs on explicit newlines (\r?\n)
+    const paragraphs: TextSpan[][] = [[]];
+    for (const seg of spans) {
+      const parts = (seg.text || '').split(/\r?\n/);
+      for (let idx = 0; idx < parts.length; idx++) {
+        if (idx > 0) {
+          paragraphs.push([]);
+        }
+        if (parts[idx].length > 0) {
+          paragraphs[paragraphs.length - 1].push({
+            ...seg,
+            text: parts[idx],
+          });
+        }
+      }
+    }
+
+    const wrappedLines: TextSpan[][] = [];
+    for (const para of paragraphs) {
+      if (para.length === 0) {
+        wrappedLines.push([]);
+        continue;
+      }
+
+      // Break paragraph into word & whitespace tokens while keeping span styling
+      const tokens: TextSpan[] = [];
+      for (const seg of para) {
+        const matches = seg.text.match(/\S+|\s+/g) || [];
+        for (const m of matches) {
+          tokens.push({ ...seg, text: m });
+        }
+      }
+
+      let curLine: TextSpan[] = [];
+      let curLineW = 0;
+
+      for (const tk of tokens) {
+        const isSpace = /^\s+$/.test(tk.text);
+        if (isSpace && curLine.length === 0) {
+          continue;
+        }
+        const tkW = measureSpanTokenWidth(tk);
+        if (!isSpace && curLine.length > 0 && curLineW + tkW > maxLineW) {
+          // Trim trailing whitespace token on current line
+          while (curLine.length > 0 && /^\s+$/.test(curLine[curLine.length - 1].text)) {
+            curLine.pop();
+          }
+          wrappedLines.push(curLine);
+          curLine = [tk];
+          curLineW = tkW;
+        } else {
+          curLine.push(tk);
+          curLineW += tkW;
+        }
+      }
+
+      if (curLine.length > 0) {
+        wrappedLines.push(curLine);
+      } else {
+        wrappedLines.push([]);
+      }
+    }
+
+    return wrappedLines.length > 0 ? wrappedLines : [[]];
+  };
+
+  const measureWrappedLinesForBox = (
+    text: string,
+    widthPx: number,
+    fontFamily: string,
+    fontSizePt: number,
+    isBold?: boolean,
+    isItalic?: boolean
+  ): string[] => {
+    const rawLines = (text || '').split(/\r?\n/);
+    const maxLineW = Math.max(12, widthPx - 8);
+    const screenFontPx = (fontSizePt || 12) * 1.5;
+    let ctx: CanvasRenderingContext2D | null = null;
+    try {
+      const canvas = document.createElement('canvas');
+      ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.font = `${isItalic ? 'italic ' : ''}${isBold ? '700 ' : '400 '}${screenFontPx}px ${getFontFamily(fontFamily || 'Times New Roman')}`;
+      }
+    } catch (e) {}
+
+    const result: string[] = [];
+    for (const rLine of rawLines) {
+      if (!rLine) {
+        result.push('');
+        continue;
+      }
+      const words = rLine.split(' ');
+      let curLine = '';
+      for (const word of words) {
+        const test = curLine ? `${curLine} ${word}` : word;
+        const testW = ctx ? ctx.measureText(test).width : test.length * (screenFontPx * 0.52);
+        if (testW > maxLineW && curLine) {
+          result.push(curLine);
+          curLine = word;
+        } else {
+          curLine = test;
+        }
+      }
+      if (curLine) result.push(curLine);
+    }
+    return result.length > 0 ? result : [''];
+  };
+
   const updateCurrentTextBox = (updates: Partial<TextBoxItem>) => {
     if (selectedTextBoxId) {
-      setTextBoxes(prev => prev.map(tb => tb.id === selectedTextBoxId ? { ...tb, ...updates } : tb));
+      let selStart = 0;
+      let selEnd = 0;
+      const el = document.getElementById(`tb-textarea-${selectedTextBoxId}`) as HTMLTextAreaElement | null;
+      if (el) {
+        selStart = el.selectionStart ?? 0;
+        selEnd = el.selectionEnd ?? 0;
+      }
+      if (selStart === selEnd && tbSelectionRange && tbSelectionRange.id === selectedTextBoxId && tbSelectionRange.end > tbSelectionRange.start) {
+        selStart = tbSelectionRange.start;
+        selEnd = tbSelectionRange.end;
+      }
+
+      const hasFormattingUpdate =
+        updates.fontFamily !== undefined ||
+        updates.fontSize !== undefined ||
+        updates.color !== undefined ||
+        updates.isBold !== undefined ||
+        updates.isItalic !== undefined;
+
+      setTextBoxes(prev => prev.map(tb => {
+        if (tb.id !== selectedTextBoxId) return tb;
+
+        // 1. If text itself is updated (typing in textarea), reconcile existing spans
+        if (updates.text !== undefined) {
+          const reconciledSpans = reconcileTextBoxSpansWithNewText(tb, updates.text);
+          const nextTb: TextBoxItem = { ...tb, ...updates, spans: reconciledSpans };
+          const spanLines = wrapTextBoxSpansToLines(nextTb);
+          const maxSpanSizePt = Math.max(
+            nextTb.fontSize || 12,
+            ...(reconciledSpans || []).map(s => s.fontSize || nextTb.fontSize || 12)
+          );
+          const screenFontPx = maxSpanSizePt * 1.5;
+          const lh = nextTb.lineHeight || 1.25;
+          const minNeededHeight = Math.ceil(spanLines.length * screenFontPx * lh + 10);
+          if (updates.height === undefined && minNeededHeight > nextTb.height) {
+            nextTb.height = minNeededHeight;
+          }
+          return nextTb;
+        }
+
+        // 2. If user highlighted a specific segment [selStart, selEnd], apply style ONLY to that segment!
+        if (hasFormattingUpdate && selEnd > selStart && selStart >= 0 && selEnd <= tb.text.length) {
+          const baseSpans = getNormalizedTextBoxSpans(tb);
+          const newSpans: TextSpan[] = [];
+          let pos = 0;
+          for (const seg of baseSpans) {
+            const segStart = pos;
+            const segEnd = pos + seg.text.length;
+            if (segEnd <= selStart || segStart >= selEnd) {
+              newSpans.push({ ...seg });
+            } else {
+              if (segStart < selStart) {
+                newSpans.push({ ...seg, text: seg.text.slice(0, selStart - segStart) });
+              }
+              const midStart = Math.max(segStart, selStart);
+              const midEnd = Math.min(segEnd, selEnd);
+              const updatedSeg: TextSpan = {
+                ...seg,
+                text: seg.text.slice(midStart - segStart, midEnd - segStart),
+              };
+              if (updates.fontFamily !== undefined) updatedSeg.fontFamily = updates.fontFamily;
+              if (updates.fontSize !== undefined) updatedSeg.fontSize = updates.fontSize;
+              if (updates.color !== undefined) updatedSeg.color = updates.color;
+              if (updates.isBold !== undefined) updatedSeg.isBold = updates.isBold;
+              if (updates.isItalic !== undefined) updatedSeg.isItalic = updates.isItalic;
+              newSpans.push(updatedSeg);
+
+              if (segEnd > selEnd) {
+                newSpans.push({ ...seg, text: seg.text.slice(selEnd - segStart) });
+              }
+            }
+            pos = segEnd;
+          }
+
+          // Merge adjacent identical spans
+          const merged: TextSpan[] = [];
+          for (const s of newSpans) {
+            if (!s.text) continue;
+            const prevSpan = merged.length > 0 ? merged[merged.length - 1] : null;
+            if (
+              prevSpan &&
+              prevSpan.fontFamily === s.fontFamily &&
+              Math.abs((prevSpan.fontSize || 12) - (s.fontSize || 12)) < 0.05 &&
+              (prevSpan.color || '#000000').toLowerCase() === (s.color || '#000000').toLowerCase() &&
+              !!prevSpan.isBold === !!s.isBold &&
+              !!prevSpan.isItalic === !!s.isItalic
+            ) {
+              prevSpan.text += s.text;
+            } else {
+              merged.push({ ...s });
+            }
+          }
+
+          const nextTb: TextBoxItem = {
+            ...tb,
+            spans: merged,
+            ...(updates.lineHeight !== undefined ? { lineHeight: updates.lineHeight } : {}),
+            ...(updates.textAlign !== undefined ? { textAlign: updates.textAlign } : {}),
+            ...(updates.hasBackground !== undefined ? { hasBackground: updates.hasBackground } : {}),
+            ...(updates.hasBorder !== undefined ? { hasBorder: updates.hasBorder } : {}),
+            ...(updates.width !== undefined ? { width: updates.width } : {}),
+            ...(updates.height !== undefined ? { height: updates.height } : {}),
+          };
+          const spanLines = wrapTextBoxSpansToLines(nextTb);
+          const maxSpanSizePt = Math.max(
+            nextTb.fontSize || 12,
+            ...merged.map(s => s.fontSize || nextTb.fontSize || 12)
+          );
+          const screenFontPx = maxSpanSizePt * 1.5;
+          const lh = nextTb.lineHeight || 1.25;
+          const minNeededHeight = Math.ceil(spanLines.length * screenFontPx * lh + 10);
+          if (updates.height === undefined && minNeededHeight > nextTb.height) {
+            nextTb.height = minNeededHeight;
+          }
+          return nextTb;
+        }
+
+        // 3. No segment selected: apply to whole TextBox and synchronize all spans
+        let updatedSpans = tb.spans;
+        if (updatedSpans && updatedSpans.length > 0 && hasFormattingUpdate) {
+          updatedSpans = updatedSpans.map(seg => ({
+            ...seg,
+            ...(updates.fontFamily !== undefined ? { fontFamily: updates.fontFamily } : {}),
+            ...(updates.fontSize !== undefined ? { fontSize: updates.fontSize } : {}),
+            ...(updates.color !== undefined ? { color: updates.color } : {}),
+            ...(updates.isBold !== undefined ? { isBold: updates.isBold } : {}),
+            ...(updates.isItalic !== undefined ? { isItalic: updates.isItalic } : {}),
+          }));
+        }
+
+        const nextTb: TextBoxItem = { ...tb, ...updates, spans: updatedSpans };
+        if (updates.lineHeight !== undefined || updates.fontSize !== undefined || updates.width !== undefined) {
+          const spanLines = wrapTextBoxSpansToLines(nextTb);
+          const maxSpanSizePt = Math.max(
+            nextTb.fontSize || 12,
+            ...(updatedSpans || []).map(s => s.fontSize || nextTb.fontSize || 12)
+          );
+          const screenFontPx = maxSpanSizePt * 1.5;
+          const lh = nextTb.lineHeight || 1.25;
+          const minNeededHeight = Math.ceil(spanLines.length * screenFontPx * lh + 10);
+          if (updates.height === undefined && minNeededHeight > nextTb.height) {
+            nextTb.height = minNeededHeight;
+          }
+        }
+        return nextTb;
+      }));
+
+      // Restore selection in textarea if user formatted a highlighted segment
+      if (selEnd > selStart) {
+        setTbSelectionRange({ id: selectedTextBoxId, start: selStart, end: selEnd });
+        if (el) {
+          requestAnimationFrame(() => {
+            try {
+              el.focus();
+              el.setSelectionRange(selStart, selEnd);
+            } catch {}
+          });
+        }
+        return;
+      }
     }
     if (updates.fontFamily !== undefined) setTbFontFamily(updates.fontFamily);
     if (updates.fontSize !== undefined) setTbFontSize(updates.fontSize);
+    if (updates.lineHeight !== undefined) setTbLineHeight(updates.lineHeight);
     if (updates.isBold !== undefined) setTbIsBold(updates.isBold);
     if (updates.isItalic !== undefined) setTbIsItalic(updates.isItalic);
     if (updates.color !== undefined) setTbColor(updates.color);
@@ -361,6 +908,22 @@ export default function App() {
     originalWidth: number;
     originalHeight: number;
     pageIndex: number;
+  } | null>(null);
+
+  const [images, setImages] = useState<PdfImageItem[]>([]);
+  const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const [imageInteraction, setImageInteraction] = useState<{
+    id: string;
+    type: 'drag' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+    startX: number;
+    startY: number;
+    originalX: number;
+    originalY: number;
+    originalWidth: number;
+    originalHeight: number;
+    pageIndex: number;
+    aspectRatio: number;
   } | null>(null);
 
   useEffect(() => {
@@ -403,12 +966,13 @@ export default function App() {
     }
   }, [highlights, documentName, pages.length, isProcessing]);
 
-  // Undo / Redo History Stack for Shapes, Highlights, and TextBoxes
+  // Undo / Redo History Stack for Shapes, Highlights, TextBoxes, and Images
   type AnnotationSnapshot = {
     shapes: ShapeItem[];
     highlights: HighlightItem[];
     textBoxes: TextBoxItem[];
     deletedTextBoxes: TextBoxItem[];
+    images: PdfImageItem[];
   };
 
   const [undoStack, setUndoStack] = useState<AnnotationSnapshot[]>([]);
@@ -418,6 +982,7 @@ export default function App() {
     highlights: [],
     textBoxes: [],
     deletedTextBoxes: [],
+    images: [],
   });
   const isUndoingOrRedoingRef = useRef<boolean>(false);
 
@@ -426,6 +991,7 @@ export default function App() {
     highlights: snap.highlights.map(h => ({ ...h })),
     textBoxes: snap.textBoxes.map(t => ({ ...t })),
     deletedTextBoxes: snap.deletedTextBoxes.map(d => ({ ...d })),
+    images: (snap.images || []).map(img => ({ ...img })),
   });
 
   const isSameSnapshot = (a: AnnotationSnapshot, b: AnnotationSnapshot): boolean => {
@@ -433,7 +999,8 @@ export default function App() {
       a.shapes.length !== b.shapes.length ||
       a.highlights.length !== b.highlights.length ||
       a.textBoxes.length !== b.textBoxes.length ||
-      a.deletedTextBoxes.length !== b.deletedTextBoxes.length
+      a.deletedTextBoxes.length !== b.deletedTextBoxes.length ||
+      (a.images?.length || 0) !== (b.images?.length || 0)
     ) {
       return false;
     }
@@ -446,6 +1013,7 @@ export default function App() {
       highlights,
       textBoxes,
       deletedTextBoxes,
+      images,
     };
 
     if (isProcessing) {
@@ -460,7 +1028,7 @@ export default function App() {
     }
 
     // Defer history commit while user is actively dragging or resizing
-    if (shapeInteraction !== null || highlightInteraction !== null || textBoxInteraction !== null) {
+    if (shapeInteraction !== null || highlightInteraction !== null || textBoxInteraction !== null || imageInteraction !== null) {
       return;
     }
 
@@ -485,7 +1053,7 @@ export default function App() {
     setUndoStack(prev => [...prev.slice(-49), prevCommitted]);
     setRedoStack([]);
     committedSnapshotRef.current = cloneSnapshot(currentSnap);
-  }, [shapes, highlights, textBoxes, deletedTextBoxes, shapeInteraction, highlightInteraction, textBoxInteraction, editingTextBoxId, isProcessing]);
+  }, [shapes, highlights, textBoxes, deletedTextBoxes, images, shapeInteraction, highlightInteraction, textBoxInteraction, imageInteraction, editingTextBoxId, isProcessing]);
 
   const applyAnnotationSnapshot = (snap: AnnotationSnapshot) => {
     isUndoingOrRedoingRef.current = true;
@@ -494,6 +1062,7 @@ export default function App() {
     setHighlights(snap.highlights.map(h => ({ ...h })));
     setTextBoxes(snap.textBoxes.map(t => ({ ...t })));
     setDeletedTextBoxes(snap.deletedTextBoxes.map(d => ({ ...d })));
+    setImages((snap.images || []).map(img => ({ ...img })));
 
     if (selectedShapeId && !snap.shapes.some(s => s.id === selectedShapeId)) {
       setSelectedShapeId(null);
@@ -505,6 +1074,9 @@ export default function App() {
       setSelectedTextBoxId(null);
       setEditingTextBoxId(null);
     }
+    if (selectedImageId && !(snap.images || []).some(img => img.id === selectedImageId)) {
+      setSelectedImageId(null);
+    }
   };
 
   const handleUndo = () => {
@@ -514,6 +1086,7 @@ export default function App() {
       highlights,
       textBoxes,
       deletedTextBoxes,
+      images,
     };
 
     if (!isSameSnapshot(committedSnapshotRef.current, currentSnap)) {
@@ -537,6 +1110,7 @@ export default function App() {
       highlights,
       textBoxes,
       deletedTextBoxes,
+      images,
     };
     const target = redoStack[redoStack.length - 1];
     setRedoStack(prev => prev.slice(0, -1));
@@ -546,7 +1120,7 @@ export default function App() {
 
   const canUndo = !isDigitallySigned && (
     undoStack.length > 0 ||
-    !isSameSnapshot(committedSnapshotRef.current, { shapes, highlights, textBoxes, deletedTextBoxes })
+    !isSameSnapshot(committedSnapshotRef.current, { shapes, highlights, textBoxes, deletedTextBoxes, images })
   );
   const canRedo = !isDigitallySigned && redoStack.length > 0;
 
@@ -554,9 +1128,11 @@ export default function App() {
   const [fontSerifRegular, setFontSerifRegular] = useState<Uint8Array | null>(null);
   const [fontSerifBold, setFontSerifBold] = useState<Uint8Array | null>(null);
   const [fontSerifItalic, setFontSerifItalic] = useState<Uint8Array | null>(null);
+  const [fontSerifBoldItalic, setFontSerifBoldItalic] = useState<Uint8Array | null>(null);
   const [fontSansRegular, setFontSansRegular] = useState<Uint8Array | null>(null);
   const [fontSansBold, setFontSansBold] = useState<Uint8Array | null>(null);
   const [fontSansItalic, setFontSansItalic] = useState<Uint8Array | null>(null);
+  const [fontSansBoldItalic, setFontSansBoldItalic] = useState<Uint8Array | null>(null);
 
   const [fontsLoading, setFontsLoading] = useState<boolean>(false);
   const [fontsLoaded, setFontsLoaded] = useState<boolean>(false);
@@ -564,29 +1140,42 @@ export default function App() {
     serifRegular: Uint8Array | null;
     serifBold: Uint8Array | null;
     serifItalic: Uint8Array | null;
+    serifBoldItalic: Uint8Array | null;
     sansRegular: Uint8Array | null;
     sansBold: Uint8Array | null;
     sansItalic: Uint8Array | null;
+    sansBoldItalic: Uint8Array | null;
   }> | null>(null);
 
   const fontsRef = useRef<{
     serifRegular: Uint8Array | null;
     serifBold: Uint8Array | null;
     serifItalic: Uint8Array | null;
+    serifBoldItalic: Uint8Array | null;
     sansRegular: Uint8Array | null;
     sansBold: Uint8Array | null;
     sansItalic: Uint8Array | null;
+    sansBoldItalic: Uint8Array | null;
   }>({
     serifRegular: null,
     serifBold: null,
     serifItalic: null,
+    serifBoldItalic: null,
     sansRegular: null,
     sansBold: null,
     sansItalic: null,
+    sansBoldItalic: null,
   });
 
   const ensureFontsLoaded = async () => {
-    if (fontsLoaded && fontsRef.current.serifRegular) return fontsRef.current;
+    if (
+      fontsLoaded &&
+      fontsRef.current.serifRegular &&
+      fontsRef.current.serifItalic &&
+      fontsRef.current.serifBoldItalic
+    ) {
+      return fontsRef.current;
+    }
     if (fontsLoadingPromiseRef.current) {
       return await fontsLoadingPromiseRef.current;
     }
@@ -628,6 +1217,11 @@ export default function App() {
         'https://raw.githubusercontent.com/codxse/linux-mandatory-font/master/mac-fonts/timesi.ttf',
         'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/tinos/Tinos-Italic.ttf'
       ];
+      const serifBoldItalicUrls = [
+        'https://cdn.jsdelivr.net/gh/codxse/linux-mandatory-font@master/mac-fonts/timesbi.ttf',
+        'https://raw.githubusercontent.com/codxse/linux-mandatory-font/master/mac-fonts/timesbi.ttf',
+        'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/tinos/Tinos-BoldItalic.ttf'
+      ];
 
       const sansRegularUrls = [
         'https://cdn.jsdelivr.net/gh/codxse/linux-mandatory-font@master/mac-fonts/arial.ttf',
@@ -644,22 +1238,31 @@ export default function App() {
         'https://raw.githubusercontent.com/codxse/linux-mandatory-font/master/mac-fonts/ariali.ttf',
         'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/arimo/Arimo%5Bwght%5D.ttf'
       ];
+      const sansBoldItalicUrls = [
+        'https://cdn.jsdelivr.net/gh/codxse/linux-mandatory-font@master/mac-fonts/arialbi.ttf',
+        'https://raw.githubusercontent.com/codxse/linux-mandatory-font/master/mac-fonts/arialbi.ttf',
+        'https://cdn.jsdelivr.net/gh/codxse/linux-mandatory-font@master/mac-fonts/ariali.ttf'
+      ];
 
-      const [sr, sb, si, sar, sab, sai] = await Promise.all([
+      const [sr, sb, si, sbi, sar, sab, sai, sabi] = await Promise.all([
         loadFontWithFallbacks(serifRegularUrls),
         loadFontWithFallbacks(serifBoldUrls),
         loadFontWithFallbacks(serifItalicUrls),
+        loadFontWithFallbacks(serifBoldItalicUrls),
         loadFontWithFallbacks(sansRegularUrls),
         loadFontWithFallbacks(sansBoldUrls),
-        loadFontWithFallbacks(sansItalicUrls)
+        loadFontWithFallbacks(sansItalicUrls),
+        loadFontWithFallbacks(sansBoldItalicUrls)
       ]);
 
       if (sr) { setFontSerifRegular(sr); fontsRef.current.serifRegular = sr; }
       if (sb) { setFontSerifBold(sb); fontsRef.current.serifBold = sb; }
       if (si) { setFontSerifItalic(si); fontsRef.current.serifItalic = si; }
+      if (sbi) { setFontSerifBoldItalic(sbi); fontsRef.current.serifBoldItalic = sbi; }
       if (sar) { setFontSansRegular(sar); fontsRef.current.sansRegular = sar; }
       if (sab) { setFontSansBold(sab); fontsRef.current.sansBold = sab; }
       if (sai) { setFontSansItalic(sai); fontsRef.current.sansItalic = sai; }
+      if (sabi) { setFontSansBoldItalic(sabi); fontsRef.current.sansBoldItalic = sabi; }
 
       setFontsLoaded(true);
       console.log('All Vietnamese fonts loaded successfully.');
@@ -687,6 +1290,13 @@ export default function App() {
           return;
         }
         const keyLower = e.key.toLowerCase();
+        if (keyLower === 's') {
+          e.preventDefault();
+          if (originalPdfBuffer && !isProcessing) {
+            handleDirectSave(false);
+          }
+          return;
+        }
         if (keyLower === 'z' && !e.shiftKey) {
           e.preventDefault();
           handleUndo();
@@ -707,10 +1317,15 @@ export default function App() {
         setSelectedTextBoxId(null);
         setEditingTextBoxId(null);
         setSelectedShapeId(null);
+        setSelectedImageId(null);
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && !editingTextId && !editingTextBoxId) {
         const activeTag = document.activeElement?.tagName ? document.activeElement.tagName.toLowerCase() : '';
         if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') return;
-        if (selectedShapeId) {
+        if (selectedImageId) {
+          e.preventDefault();
+          setImages(prev => prev.filter(img => img.id !== selectedImageId));
+          setSelectedImageId(null);
+        } else if (selectedShapeId) {
           e.preventDefault();
           setShapes(prev => prev.filter(s => s.id !== selectedShapeId));
           setSelectedShapeId(null);
@@ -731,6 +1346,21 @@ export default function App() {
           deleteField(selectedFieldId);
           setSelectedFieldId(null);
         }
+      } else if (selectedImageId && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        const activeTag = document.activeElement?.tagName ? document.activeElement.tagName.toLowerCase() : '';
+        if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') return;
+        e.preventDefault();
+        const delta = e.shiftKey ? 5 : 1;
+        setImages(prev => prev.map(img => {
+          if (img.id !== selectedImageId) return img;
+          let dx = 0;
+          let dy = 0;
+          if (e.key === 'ArrowUp') dy = -delta;
+          if (e.key === 'ArrowDown') dy = delta;
+          if (e.key === 'ArrowLeft') dx = -delta;
+          if (e.key === 'ArrowRight') dx = delta;
+          return { ...img, x: Math.max(0, img.x + dx), y: Math.max(0, img.y + dy) };
+        }));
       } else if (selectedShapeId && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
         const activeTag = document.activeElement?.tagName ? document.activeElement.tagName.toLowerCase() : '';
         if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') return;
@@ -814,7 +1444,91 @@ export default function App() {
      }
   };
 
-  // Wheel zoom with Ctrl or Cmd
+  const captureZoomAnchor = (clientX: number, clientY: number, baseZoom: number) => {
+    const container = workspaceRef.current;
+    if (!container) return;
+    const pageEls = container.querySelectorAll<HTMLElement>('[data-page-index]');
+    if (pageEls.length === 0) return;
+
+    let bestEl: HTMLElement | null = null;
+    let bestIdx = 0;
+    let minDistance = Infinity;
+
+    pageEls.forEach((el) => {
+      const idx = parseInt(el.getAttribute('data-page-index') || '0', 10);
+      const rect = el.getBoundingClientRect();
+      const vDist =
+        clientY >= rect.top && clientY <= rect.bottom
+          ? 0
+          : Math.min(Math.abs(clientY - rect.top), Math.abs(clientY - rect.bottom));
+      const hDist =
+        clientX >= rect.left && clientX <= rect.right
+          ? 0
+          : Math.min(Math.abs(clientX - rect.left), Math.abs(clientX - rect.right));
+      const totalDist = vDist * 10 + hDist;
+      if (totalDist < minDistance) {
+        minDistance = totalDist;
+        bestEl = el;
+        bestIdx = idx;
+      }
+    });
+
+    if (!bestEl) return;
+    const rect = (bestEl as HTMLElement).getBoundingClientRect();
+    const clampedClientX = Math.min(Math.max(clientX, rect.left), rect.right);
+    const clampedClientY = Math.min(Math.max(clientY, rect.top), rect.bottom);
+
+    const pagePointX = (clampedClientX - rect.left) / baseZoom;
+    const pagePointY = (clampedClientY - rect.top) / baseZoom;
+
+    zoomAnchorRef.current = {
+      pageIndex: bestIdx,
+      pagePointX,
+      pagePointY,
+      anchorClientX: clampedClientX,
+      anchorClientY: clampedClientY,
+    };
+  };
+
+  const applyZoomWithCenterAnchor = (nextZoomRaw: number) => {
+    const nextZoom = Math.min(Math.max(Math.round(nextZoomRaw * 100) / 100, 0.25), 3.0);
+    if (nextZoom === zoomRef.current) return;
+    const container = workspaceRef.current;
+    if (container && !zoomAnchorRef.current) {
+      const cRect = container.getBoundingClientRect();
+      captureZoomAnchor(
+        cRect.left + cRect.width / 2,
+        cRect.top + cRect.height / 2,
+        zoomRef.current
+      );
+    }
+    zoomRef.current = nextZoom;
+    setZoom(nextZoom);
+  };
+
+  useLayoutEffect(() => {
+    zoomRef.current = zoom;
+    const anchor = zoomAnchorRef.current;
+    const container = workspaceRef.current;
+    if (!anchor || !container) return;
+    zoomAnchorRef.current = null;
+
+    const pageEl = container.querySelector<HTMLElement>(`[data-page-index="${anchor.pageIndex}"]`);
+    if (!pageEl) return;
+
+    const newRect = pageEl.getBoundingClientRect();
+    const newScreenX = newRect.left + anchor.pagePointX * zoom;
+    const newScreenY = newRect.top + anchor.pagePointY * zoom;
+
+    container.scrollLeft += newScreenX - anchor.anchorClientX;
+    container.scrollTop += newScreenY - anchor.anchorClientY;
+
+    if (pages.length > 0 && currentPage !== anchor.pageIndex + 1) {
+      setCurrentPage(anchor.pageIndex + 1);
+    }
+  }, [zoom]);
+
+  // Wheel zoom with Ctrl or Cmd anchored at the mouse cursor
   useEffect(() => {
     const container = workspaceRef.current;
     if (!container) return;
@@ -822,10 +1536,15 @@ export default function App() {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         const delta = e.deltaY < 0 ? 0.15 : -0.15;
-        setZoom((prev) => {
-          const next = Math.round((prev + delta) * 100) / 100;
-          return Math.min(Math.max(next, 0.25), 3.0);
-        });
+        const currentZ = zoomRef.current;
+        const nextZoom = Math.min(Math.max(Math.round((currentZ + delta) * 100) / 100, 0.25), 3.0);
+        if (nextZoom === currentZ) return;
+
+        if (!zoomAnchorRef.current) {
+          captureZoomAnchor(e.clientX, e.clientY, currentZ);
+        }
+        zoomRef.current = nextZoom;
+        setZoom(nextZoom);
       }
     };
     container.addEventListener('wheel', handleNativeWheel, { passive: false });
@@ -841,7 +1560,7 @@ export default function App() {
     const availableWidth = workspaceRef.current.clientWidth - 96;
     if (availableWidth > 100) {
       const calculatedZoom = Math.round((availableWidth / pageWidth) * 100) / 100;
-      setZoom(Math.min(Math.max(calculatedZoom, 0.25), 3.0));
+      applyZoomWithCenterAnchor(calculatedZoom);
     }
   };
 
@@ -852,12 +1571,12 @@ export default function App() {
     const availableHeight = workspaceRef.current.clientHeight - 96;
     if (availableHeight > 100) {
       const calculatedZoom = Math.round((availableHeight / pageHeight) * 100) / 100;
-      setZoom(Math.min(Math.max(calculatedZoom, 0.25), 3.0));
+      applyZoomWithCenterAnchor(calculatedZoom);
     }
   };
 
   const handleResetZoom = () => {
-    setZoom(1.0);
+    applyZoomWithCenterAnchor(1.0);
   };
 
   const handleScrollToPage = (index: number) => {
@@ -1603,16 +2322,20 @@ export default function App() {
     const extractedTexts: PdfTextItem[] = [];
     const extractedHighlights: HighlightItem[] = [];
 
+    const measureCanvas = document.createElement('canvas');
+    const measureCtx = measureCanvas.getContext('2d');
+
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const viewport = page.getViewport({ scale: 1.5 });
+      const hiResViewport = page.getViewport({ scale: 2.5 });
 
       const canvas = document.createElement('canvas');
       const context = canvas.getContext('2d');
       if (!context) continue;
 
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
+      canvas.width = hiResViewport.width;
+      canvas.height = hiResViewport.height;
 
       // Extract existing annotations on the page:
       // 1. Hide Highlight annotations from being permanently baked into canvas pixels
@@ -1679,26 +2402,32 @@ export default function App() {
 
       await page.render({
         canvasContext: context,
-        viewport: viewport,
+        viewport: hiResViewport,
         annotationMode: 3, // 3 = AnnotationMode.ENABLE_STORAGE: preserves digital signatures/stamps while respecting noView for highlights
       } as any).promise;
 
       parsedPages.push({
         width: viewport.width,
         height: viewport.height,
-        dataUrl: canvas.toDataURL('image/jpeg', 0.8)
+        dataUrl: canvas.toDataURL('image/jpeg', 0.95),
+        viewBox: viewport.viewBox && viewport.viewBox.length >= 4
+          ? [viewport.viewBox[0], viewport.viewBox[1], viewport.viewBox[2], viewport.viewBox[3]]
+          : undefined,
+        pageRotation: viewport.rotation || 0,
       });
 
       try {
         const textContent = await page.getTextContent();
         const rawItems: any[] = [];
 
-        textContent.items.forEach((item: any) => {
+        textContent.items.forEach((item: any, streamIdx: number) => {
           if (!item.str || item.str.trim() === '') return;
 
           const transform = item.transform;
           const tx = transform[4];
           const ty = transform[5];
+          const [vx, vy] = viewport.convertToViewportPoint(tx, ty);
+          const pdfRot = (Math.round((Math.atan2(transform[1], transform[0]) * 180) / Math.PI) % 360 + 360) % 360;
           // Độ cao phông chữ chuẩn xác theo trục dọc (vertical scale) của PDF
           const verticalScale = Math.sqrt(transform[2] * transform[2] + transform[3] * transform[3]);
           const horizontalScale = Math.sqrt(transform[0] * transform[0] + transform[1] * transform[1]);
@@ -1709,38 +2438,96 @@ export default function App() {
             str: item.str,
             tx,
             ty,
+            vx,
+            vy,
+            pdfRot,
             width: item.width,
             fontSize,
             fontProps,
+            streamIdx,
           });
         });
 
-        // Sắp xếp các đoạn văn bản theo thứ tự đọc tự nhiên: trên xuống dưới (ty giảm dần), trái sang phải (tx tăng dần)
+        // Sắp xếp các đoạn văn bản theo thứ tự đọc trên màn hình (vx, vy)
         rawItems.sort((a, b) => {
-          const dy = b.ty - a.ty;
-          if (Math.abs(dy) > Math.max(3, a.fontSize * 0.25)) {
+          const dy = a.vy - b.vy;
+          if (Math.abs(dy) > Math.max(3, a.fontSize * 0.25 * viewport.scale)) {
             return dy;
           }
-          return a.tx - b.tx;
+          if (Math.abs(a.vx - b.vx) > 1.5) {
+            return a.vx - b.vx;
+          }
+          return a.streamIdx - b.streamIdx;
         });
 
-        // Gộp các cụm từ liên tiếp trên cùng một dòng để người dùng có thể nhấp chọn cả câu/dòng mượt mà như Foxit
-        const mergedItems: any[] = [];
+        // Loại bỏ các lớp chữ trùng lặp (faux-bold vẽ đè 2 lần trong PDF hoặc chữ cũ nằm dưới lớp che trắng)
+        const dedupedItems: any[] = [];
         for (const item of rawItems) {
+          let isDuplicateOrCovered = false;
+          for (let dIdx = dedupedItems.length - 1; dIdx >= 0; dIdx--) {
+            const existing = dedupedItems[dIdx];
+            if (Math.abs(existing.vy - item.vy) > Math.max(3, existing.fontSize * 0.28 * viewport.scale)) {
+              break;
+            }
+            if (existing.pdfRot !== item.pdfRot) continue;
+
+            // Trường hợp 1: Faux-bold hoặc chuỗi trùng hệt nhau tại cùng vị trí X
+            if (
+              Math.abs(existing.vx - item.vx) <= Math.max(4, existing.fontSize * 0.3 * viewport.scale) &&
+              existing.str.trim() === item.str.trim()
+            ) {
+              if (Math.abs(existing.vx - item.vx) >= 0.05) {
+                existing.fontProps.isBold = true;
+              }
+              isDuplicateOrCovered = true;
+              break;
+            }
+
+            // Trường hợp 2: Hai đoạn văn bản đè trực tiếp lên nhau trên cùng 1 dòng (ví dụ: chữ mới đè lên chữ cũ dưới lớp whiteout)
+            const exStart = existing.vx;
+            const exEnd = existing.vx + existing.width * viewport.scale;
+            const itStart = item.vx;
+            const itEnd = item.vx + item.width * viewport.scale;
+            const overlapStart = Math.max(exStart, itStart);
+            const overlapEnd = Math.min(exEnd, itEnd);
+            const overlapW = overlapEnd - overlapStart;
+            const minW = Math.min(existing.width * viewport.scale, item.width * viewport.scale);
+
+            if (minW > 4 && overlapW > Math.max(6, minW * 0.35)) {
+              // Giữ lại lớp chữ có streamIdx lớn hơn (vẽ sau = nằm trên cùng)
+              if (item.streamIdx > existing.streamIdx) {
+                dedupedItems[dIdx] = { ...item };
+              }
+              isDuplicateOrCovered = true;
+              break;
+            }
+          }
+          if (!isDuplicateOrCovered) {
+            dedupedItems.push({ ...item });
+          }
+        }
+
+        // Gộp các cụm từ liên tiếp trên cùng một dòng khi cùng phông, cùng độ đậm, cùng độ nghiêng và cùng góc xoay
+        const mergedItems: any[] = [];
+        for (const item of dedupedItems) {
           const prev = mergedItems.length > 0 ? mergedItems[mergedItems.length - 1] : null;
+          const prevEndVx = prev ? prev.vx + prev.width * viewport.scale : 0;
+          const gapScreen = prev ? item.vx - prevEndVx : 0;
           if (
             prev &&
-            Math.abs(prev.ty - item.ty) <= Math.max(2, prev.fontSize * 0.2) &&
-            item.tx >= prev.tx - 1 &&
-            (item.tx - (prev.tx + prev.width)) <= Math.max(prev.fontSize * 1.2, 16) &&
+            prev.pdfRot === item.pdfRot &&
+            Math.abs(prev.vy - item.vy) <= Math.max(2, prev.fontSize * 0.2 * viewport.scale) &&
+            gapScreen >= -Math.max(2.5, prev.fontSize * 0.2 * viewport.scale) &&
+            gapScreen <= Math.max(prev.fontSize * 0.85 * viewport.scale, 15) &&
             prev.fontProps.fontFamily === item.fontProps.fontFamily &&
             prev.fontProps.isBold === item.fontProps.isBold &&
-            Math.abs(prev.fontSize - item.fontSize) <= 1
+            prev.fontProps.isItalic === item.fontProps.isItalic &&
+            Math.abs(prev.fontSize - item.fontSize) <= 0.8
           ) {
-            const gap = item.tx - (prev.tx + prev.width);
-            const needsSpace = gap > (prev.fontSize * 0.15) && !prev.str.endsWith(' ') && !item.str.startsWith(' ');
+            const gap = gapScreen / viewport.scale;
+            const needsSpace = gap > (prev.fontSize * 0.14) && !prev.str.endsWith(' ') && !item.str.startsWith(' ');
             prev.str += (needsSpace ? ' ' : '') + item.str;
-            prev.width = (item.tx + item.width) - prev.tx;
+            prev.width = Math.max(prev.width, (item.vx - prev.vx) / viewport.scale + item.width);
           } else {
             mergedItems.push({ ...item });
           }
@@ -1749,11 +2536,31 @@ export default function App() {
         mergedItems.forEach((item, idx) => {
           const [vx, vy] = viewport.convertToViewportPoint(item.tx, item.ty);
           const scale = viewport.scale;
+
+          // Hiệu chuẩn kích thước phông chữ thực tế (calibratedFontSize) khớp 1:1 với độ rộng chữ gốc trên PDF
+          let calibratedSize = item.fontSize;
+          if (measureCtx && item.str && item.str.trim().length >= 3 && item.width > 0) {
+            try {
+              const cssFontStack = getFontFamily(item.fontProps.fontFamily);
+              measureCtx.font = `${item.fontProps.isItalic ? 'italic ' : ''}${item.fontProps.isBold ? '700 ' : '400 '}100px ${cssFontStack}`;
+              const unitWidth = measureCtx.measureText(item.str).width / 100;
+              if (unitWidth > 0) {
+                const widthMatchedSize = item.width / unitWidth;
+                // Giới hạn trong khoảng hợp lý [84% .. 104%] để cỡ chữ khớp chính xác với dòng chữ gốc
+                if (widthMatchedSize >= item.fontSize * 0.80 && widthMatchedSize <= item.fontSize * 1.12) {
+                  calibratedSize = Math.max(item.fontSize * 0.84, Math.min(item.fontSize * 1.03, widthMatchedSize));
+                }
+              }
+            } catch (e) {
+              // ignore
+            }
+          }
+
           const itemWidth = item.width * scale;
-          const itemHeight = item.fontSize * scale;
-          // Căn chỉnh vị trí Y theo ascent thực tế của phông Times New Roman (khoảng 82% em-height)
-          const finalY = vy - itemHeight * 0.85;
-          const roundedSize = Math.round(item.fontSize * 10) / 10;
+          const itemHeight = calibratedSize * scale;
+          // Căn chỉnh vị trí Y theo đúng baseline thực tế của phông chữ (ascent ~ 82% em-height)
+          const finalY = vy - itemHeight * 0.82;
+          const roundedSize = Math.round(calibratedSize * 20) / 20;
 
           extractedTexts.push({
             id: `text-${i - 1}-${idx}`,
@@ -1762,8 +2569,9 @@ export default function App() {
             x: vx,
             y: finalY,
             width: itemWidth || 50,
-            height: itemHeight || item.fontSize,
-            fontSize: item.fontSize,
+            originalWidth: itemWidth || 50,
+            height: itemHeight || calibratedSize,
+            fontSize: calibratedSize,
             fontName: item.fontProps.rawName,
             pageIndex: i - 1,
             isModified: false,
@@ -1779,7 +2587,7 @@ export default function App() {
             offsetY: 0,
             hasBackground: true,
             customColor: '#000000',
-            rotation: 0,
+            rotation: item.pdfRot || 0,
             baselineY: vy,
           });
         });
@@ -2206,16 +3014,19 @@ export default function App() {
     return result;
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const loadPdfFromFile = async (file: File, handle?: any) => {
     if (!file) return;
 
+    fileHandleRef.current = handle || null;
+    setHasDirectFileHandle(Boolean(handle));
     setIsProcessing(true);
     setDocumentName(file.name);
     setHighlights([]);
     setSelectedHighlightId(null);
     setShapes([]);
     setSelectedShapeId(null);
+    setImages([]);
+    setSelectedImageId(null);
     setTextBoxes([]);
     setSelectedTextBoxId(null);
     setEditingTextBoxId(null);
@@ -2354,6 +3165,39 @@ export default function App() {
     }
   };
 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    await loadPdfFromFile(file, null);
+  };
+
+  const handleOpenPdfClick = async () => {
+    if (typeof (window as any).showOpenFilePicker === 'function') {
+      try {
+        const [handle] = await (window as any).showOpenFilePicker({
+          types: [
+            {
+              description: 'Tài liệu PDF (*.pdf)',
+              accept: { 'application/pdf': ['.pdf'] },
+            },
+          ],
+          multiple: false,
+        });
+        if (handle) {
+          const file = await handle.getFile();
+          await loadPdfFromFile(file, handle);
+        }
+        return;
+      } catch (err: any) {
+        if (err && err.name === 'AbortError') {
+          return;
+        }
+        // Fallback to hidden file input if blocked by iframe policy
+      }
+    }
+    fileInputRef.current?.click();
+  };
+
   const handleAppendPDF = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -2390,6 +3234,181 @@ export default function App() {
     } finally {
        setIsProcessing(false);
        if (appendFileInputRef.current) appendFileInputRef.current.value = '';
+    }
+  };
+
+  useEffect(() => {
+    let mounted = true;
+    loadSessionFromIndexedDB().then(async (session) => {
+      if (!mounted || !session || !session.pdfBytes) return;
+      try {
+        setIsProcessing(true);
+        const uint8 = session.pdfBytes instanceof Uint8Array
+          ? session.pdfBytes
+          : new Uint8Array(session.pdfBytes);
+        setDocumentName(session.documentName || 'Tai-lieu.pdf');
+        setOriginalPdfBuffer(uint8);
+        const isSigned = checkIsDigitallySigned(uint8);
+        setIsDigitallySigned(isSigned);
+        await renderPdfPages(uint8);
+        if (Array.isArray(session.highlights)) setHighlights(session.highlights);
+        if (Array.isArray(session.shapes)) setShapes(session.shapes);
+        if (Array.isArray(session.fields)) setFields(session.fields);
+        if (Array.isArray(session.pdfTexts) && session.pdfTexts.length > 0) {
+          setPdfTexts((prev) =>
+            prev.map((item) => {
+              const mod = session.pdfTexts.find((m: any) => m.id === item.id);
+              return mod ? { ...item, ...mod, isModified: true } : item;
+            })
+          );
+        }
+        if (session.activeTool) setActiveTool(session.activeTool);
+      } catch (e) {
+        console.error('Failed to restore session from IndexedDB:', e);
+      } finally {
+        setIsProcessing(false);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const handleWorkspaceFileDrop = async (e: React.DragEvent) => {
+    const hasFiles = Array.from(e.dataTransfer.types || []).includes('Files');
+    if (!hasFiles) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setIsWorkspaceDragOver(false);
+
+    let firstHandlePromise: Promise<any> | null = null;
+    try {
+      const firstItem = e.dataTransfer.items?.[0] as any;
+      if (firstItem && typeof firstItem.getAsFileSystemHandle === 'function') {
+        firstHandlePromise = firstItem.getAsFileSystemHandle();
+      }
+    } catch {}
+
+    const droppedFiles = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+    const pdfFile = droppedFiles.find(
+      (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+    );
+    if (!pdfFile) return;
+
+    let resolvedHandle: any = null;
+    if (firstHandlePromise) {
+      try {
+        const h = await firstHandlePromise;
+        if (h && h.kind === 'file') {
+          resolvedHandle = h;
+        }
+      } catch {}
+    }
+
+    await loadPdfFromFile(pdfFile, resolvedHandle);
+  };
+
+  const handleDropPdfFiles = async (
+    files: File[],
+    targetIndex?: number,
+    firstFileHandlePromise?: Promise<any> | null
+  ) => {
+    const pdfFiles = files.filter(
+      (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+    );
+    if (pdfFiles.length === 0) return;
+
+    if (isDigitallySigned) {
+      alert("Tài liệu hiện tại đã được ký số. Việc thêm trang đã bị khóa để tránh làm hỏng chữ ký số.");
+      return;
+    }
+
+    if (!originalPdfBuffer && pdfFiles.length === 1) {
+      let resolvedHandle: any = null;
+      if (firstFileHandlePromise) {
+        try {
+          const h = await firstFileHandlePromise;
+          if (h && h.kind === 'file') {
+            resolvedHandle = h;
+          }
+        } catch {}
+      }
+      await loadPdfFromFile(pdfFiles[0], resolvedHandle);
+      return;
+    }
+
+    setIsProcessing(true);
+    try {
+      if (!originalPdfBuffer) {
+        const firstBuf = new Uint8Array(await pdfFiles[0].arrayBuffer());
+        const baseDoc = await PDFDocument.load(firstBuf);
+        for (let i = 1; i < pdfFiles.length; i++) {
+          const nextBuf = new Uint8Array(await pdfFiles[i].arrayBuffer());
+          const nextDoc = await PDFDocument.load(nextBuf);
+          const copied = await baseDoc.copyPages(nextDoc, nextDoc.getPageIndices());
+          copied.forEach((p) => baseDoc.addPage(p));
+        }
+        const savedBytes = await baseDoc.save();
+        setDocumentName(pdfFiles[0].name);
+        setOriginalPdfBuffer(savedBytes);
+        await renderPdfPages(savedBytes);
+      } else {
+        const existingDoc = await PDFDocument.load(originalPdfBuffer);
+        const totalCurrent = existingDoc.getPageCount();
+        const insertPos =
+          targetIndex !== undefined
+            ? Math.min(Math.max(0, targetIndex), totalCurrent)
+            : totalCurrent;
+
+        let totalInserted = 0;
+        for (const file of pdfFiles) {
+          const buf = new Uint8Array(await file.arrayBuffer());
+          const newDoc = await PDFDocument.load(buf);
+          const copiedPages = await existingDoc.copyPages(newDoc, newDoc.getPageIndices());
+          copiedPages.forEach((page, idx) => {
+            existingDoc.insertPage(insertPos + totalInserted + idx, page);
+          });
+          totalInserted += copiedPages.length;
+        }
+
+        const mergedBytes = await existingDoc.save();
+        setOriginalPdfBuffer(mergedBytes);
+
+        if (insertPos < totalCurrent && totalInserted > 0) {
+          setFields((prev) =>
+            prev.map((f) =>
+              f.pageIndex >= insertPos ? { ...f, pageIndex: f.pageIndex + totalInserted } : f
+            )
+          );
+          setPdfTexts((prev) =>
+            prev.map((t) =>
+              t.pageIndex >= insertPos ? { ...t, pageIndex: t.pageIndex + totalInserted } : t
+            )
+          );
+          setHighlights((prev) =>
+            prev.map((h) =>
+              h.pageIndex >= insertPos ? { ...h, pageIndex: h.pageIndex + totalInserted } : h
+            )
+          );
+          setShapes((prev) =>
+            prev.map((s) =>
+              s.pageIndex >= insertPos ? { ...s, pageIndex: s.pageIndex + totalInserted } : s
+            )
+          );
+          setTextBoxes((prev) =>
+            prev.map((tb) =>
+              tb.pageIndex >= insertPos ? { ...tb, pageIndex: tb.pageIndex + totalInserted } : tb
+            )
+          );
+        }
+
+        await renderPdfPages(mergedBytes);
+      }
+    } catch (error) {
+      console.error('Error dropping PDF files:', error);
+      alert("Không thể thêm trang từ file PDF đã kéo vào.");
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -2748,41 +3767,388 @@ export default function App() {
     }
   };
 
-  const handleSaveTextEdit = (id: string, newText: string) => {
-    let measuredWidth = 0;
+  const getNormalizedSpans = (t: PdfTextItem): TextSpan[] => {
+    if (t.spans && t.spans.length > 0 && t.spans.map(s => s.text).join('') === t.text) {
+      return t.spans;
+    }
+    return [
+      {
+        text: t.text,
+        fontFamily: t.customFontFamily || 'Times New Roman',
+        fontSize: t.customFontSize || t.fontSize,
+        color: t.customColor || '#000000',
+        isBold: !!t.isBold,
+        isItalic: !!t.isItalic,
+      },
+    ];
+  };
+
+  const mergeAdjacentSpans = (spans: TextSpan[]): TextSpan[] => {
+    const merged: TextSpan[] = [];
+    for (const s of spans) {
+      if (!s.text) continue;
+      const prev = merged.length > 0 ? merged[merged.length - 1] : null;
+      if (
+        prev &&
+        prev.fontFamily === s.fontFamily &&
+        Math.abs((prev.fontSize || 12) - (s.fontSize || 12)) < 0.05 &&
+        (prev.color || '#000000').toLowerCase() === (s.color || '#000000').toLowerCase() &&
+        !!prev.isBold === !!s.isBold &&
+        !!prev.isItalic === !!s.isItalic
+      ) {
+        prev.text += s.text;
+      } else {
+        merged.push({ ...s });
+      }
+    }
+    return merged;
+  };
+
+  const reconcileSpansWithNewText = (t: PdfTextItem, newText: string): TextSpan[] | undefined => {
+    if (!t.spans || t.spans.length === 0) return undefined;
+    const oldText = t.spans.map(s => s.text).join('');
+    if (oldText === newText) return t.spans;
+    if (!newText) return [];
+
+    let prefixLen = 0;
+    const minLen = Math.min(oldText.length, newText.length);
+    while (prefixLen < minLen && oldText[prefixLen] === newText[prefixLen]) {
+      prefixLen++;
+    }
+
+    let oldSuffixIdx = oldText.length;
+    let newSuffixIdx = newText.length;
+    while (
+      oldSuffixIdx > prefixLen &&
+      newSuffixIdx > prefixLen &&
+      oldText[oldSuffixIdx - 1] === newText[newSuffixIdx - 1]
+    ) {
+      oldSuffixIdx--;
+      newSuffixIdx--;
+    }
+
+    const result: TextSpan[] = [];
+    let pos = 0;
+    let middleStyle: Omit<TextSpan, 'text'> = {
+      fontFamily: t.customFontFamily || 'Times New Roman',
+      fontSize: t.customFontSize || t.fontSize,
+      color: t.customColor || '#000000',
+      isBold: !!t.isBold,
+      isItalic: !!t.isItalic,
+    };
+
+    for (const s of t.spans) {
+      const segStart = pos;
+      const segEnd = pos + s.text.length;
+      if (segStart <= prefixLen && prefixLen <= segEnd) {
+        middleStyle = {
+          fontFamily: s.fontFamily,
+          fontSize: s.fontSize,
+          color: s.color,
+          isBold: s.isBold,
+          isItalic: s.isItalic,
+        };
+      }
+      if (segStart < prefixLen) {
+        const takeEnd = Math.min(segEnd, prefixLen);
+        result.push({ ...s, text: s.text.slice(0, takeEnd - segStart) });
+      }
+      pos = segEnd;
+    }
+
+    const insertedMiddle = newText.slice(prefixLen, newSuffixIdx);
+    if (insertedMiddle) {
+      result.push({ ...middleStyle, text: insertedMiddle });
+    }
+
+    pos = 0;
+    for (const s of t.spans) {
+      const segStart = pos;
+      const segEnd = pos + s.text.length;
+      if (segEnd > oldSuffixIdx) {
+        const takeStart = Math.max(segStart, oldSuffixIdx);
+        result.push({ ...s, text: s.text.slice(takeStart - segStart) });
+      }
+      pos = segEnd;
+    }
+
+    return mergeAdjacentSpans(result);
+  };
+
+  const measureTextItemWidth = (t: PdfTextItem, textToMeasure?: string, spansToMeasure?: TextSpan[]): number => {
     try {
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        const target = pdfTexts.find(item => item.id === id);
-        const fontSize = (target?.customFontSize || target?.fontSize || 13) * 1.5;
-        const fontFamily = target?.customFontFamily || 'Times New Roman';
-        const isBold = target?.isBold;
-        const isItalic = target?.isItalic;
-        ctx.font = `${isItalic ? 'italic ' : ''}${isBold ? '700 ' : '400 '}${fontSize}px "${fontFamily}", "Times New Roman", serif`;
-        measuredWidth = ctx.measureText(newText).width;
+        const activeSpans = spansToMeasure && spansToMeasure.length > 0 ? spansToMeasure : null;
+        if (activeSpans) {
+          let totalW = 0;
+          for (const seg of activeSpans) {
+            const sz = (seg.fontSize || t.customFontSize || t.fontSize || 13) * 1.5;
+            const ff = getFontFamily(seg.fontFamily || t.customFontFamily || t.fontName);
+            const b = seg.isBold ?? t.isBold;
+            const it = seg.isItalic ?? t.isItalic;
+            ctx.font = `${it ? 'italic ' : ''}${b ? '700 ' : '400 '}${sz}px ${ff}`;
+            totalW += ctx.measureText(seg.text).width;
+          }
+          return totalW;
+        }
+        const fontSize = (t.customFontSize || t.fontSize || 13) * 1.5;
+        const cssFontFamily = getFontFamily(t.customFontFamily || t.fontName);
+        const isBold = t.isBold;
+        const isItalic = t.isItalic;
+        ctx.font = `${isItalic ? 'italic ' : ''}${isBold ? '700 ' : '400 '}${fontSize}px ${cssFontFamily}`;
+        return ctx.measureText(textToMeasure !== undefined ? textToMeasure : t.text).width;
       }
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
+    return t.width;
+  };
 
-    setPdfTexts(pdfTexts.map(t => {
+  const handleSaveTextEdit = (id: string, newText: string, keepOpen = false) => {
+    setPdfTexts(prev => prev.map(t => {
       if (t.id === id) {
-        const isModified = newText !== t.originalText;
+        const hasTextChanged = newText !== t.originalText;
+        const hasSpans = Boolean(t.spans && t.spans.length > 0);
+        const shouldBeModified = hasTextChanged || hasSpans || t.isModified;
+        if (!shouldBeModified) {
+          return t;
+        }
+        const origW = t.originalWidth || (t.pdfWidth * 1.5) || t.width;
+        const nextSpans = reconcileSpansWithNewText(t, newText);
+        const measuredWidth = measureTextItemWidth(t, newText, nextSpans);
         return { 
           ...t, 
           text: newText, 
-          isModified,
-          width: measuredWidth > 0 ? Math.max(measuredWidth, t.width) : t.width
+          spans: nextSpans,
+          isModified: true,
+          originalWidth: origW,
+          width: measuredWidth > 0 ? Math.max(20, measuredWidth) : t.width
         };
       }
       return t;
     }));
-    setEditingTextId(null);
+    if (!keepOpen) {
+      setEditingTextId(null);
+      setEditSelectionRange(null);
+    }
   };
 
   const handleTextPropChange = (id: string, updates: Partial<PdfTextItem>) => {
-    setPdfTexts(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
+    let liveTextareaVal: string | null = null;
+    let selStart = 0;
+    let selEnd = 0;
+    const el = document.getElementById(`edit-textarea-${id}`) as HTMLTextAreaElement | null;
+    if (el) {
+      liveTextareaVal = el.value;
+      selStart = el.selectionStart ?? 0;
+      selEnd = el.selectionEnd ?? 0;
+    }
+    if (selStart === selEnd && editSelectionRange && editSelectionRange.id === id && editSelectionRange.end > editSelectionRange.start) {
+      selStart = editSelectionRange.start;
+      selEnd = editSelectionRange.end;
+    }
+
+    const hasFormattingUpdate =
+      updates.customFontSize !== undefined ||
+      updates.customColor !== undefined ||
+      updates.isBold !== undefined ||
+      updates.isItalic !== undefined ||
+      updates.customFontFamily !== undefined;
+
+    setPdfTexts(prev => prev.map(t => {
+      if (t.id !== id) return t;
+      const currentText = liveTextareaVal !== null ? liveTextareaVal : t.text;
+      const syncedSpans = liveTextareaVal !== null ? reconcileSpansWithNewText(t, currentText) : t.spans;
+      const workingItem: PdfTextItem = { ...t, text: currentText, spans: syncedSpans };
+
+      // Nếu người dùng đang bôi đen 1 từ hoặc cụm từ [selStart, selEnd], chỉ áp dụng cỡ chữ / màu / in đậm / in nghiêng cho từ đó!
+      if (hasFormattingUpdate && selEnd > selStart && selStart >= 0 && selEnd <= currentText.length) {
+        const baseSpans = getNormalizedSpans(workingItem);
+        const newSpans: TextSpan[] = [];
+        let pos = 0;
+        for (const seg of baseSpans) {
+          const segStart = pos;
+          const segEnd = pos + seg.text.length;
+          if (segEnd <= selStart || segStart >= selEnd) {
+            newSpans.push({ ...seg });
+          } else {
+            if (segStart < selStart) {
+              newSpans.push({ ...seg, text: seg.text.slice(0, selStart - segStart) });
+            }
+            const midStart = Math.max(segStart, selStart);
+            const midEnd = Math.min(segEnd, selEnd);
+            const updatedSeg: TextSpan = {
+              ...seg,
+              text: seg.text.slice(midStart - segStart, midEnd - segStart),
+            };
+            if (updates.customFontFamily !== undefined) updatedSeg.fontFamily = updates.customFontFamily;
+            if (updates.customFontSize !== undefined) updatedSeg.fontSize = updates.customFontSize;
+            if (updates.customColor !== undefined) updatedSeg.color = updates.customColor;
+            if (updates.isBold !== undefined) updatedSeg.isBold = updates.isBold;
+            if (updates.isItalic !== undefined) updatedSeg.isItalic = updates.isItalic;
+            newSpans.push(updatedSeg);
+
+            if (segEnd > selEnd) {
+              newSpans.push({ ...seg, text: seg.text.slice(selEnd - segStart) });
+            }
+          }
+          pos = segEnd;
+        }
+        const merged = mergeAdjacentSpans(newSpans);
+        const measuredW = measureTextItemWidth(workingItem, currentText, merged);
+        return {
+          ...workingItem,
+          isModified: true,
+          spans: merged,
+          width: measuredW > 0 ? Math.max(20, measuredW) : workingItem.width,
+          ...(updates.hasBackground !== undefined ? { hasBackground: updates.hasBackground } : {}),
+        };
+      }
+
+      // Nếu không bôi đen từ riêng lẻ: áp dụng cho toàn bộ ô chữ và đồng bộ tất cả spans
+      let updatedSpans = workingItem.spans;
+      if (updatedSpans && updatedSpans.length > 0 && hasFormattingUpdate) {
+        updatedSpans = updatedSpans.map(seg => ({
+          ...seg,
+          ...(updates.customFontFamily !== undefined ? { fontFamily: updates.customFontFamily } : {}),
+          ...(updates.customFontSize !== undefined ? { fontSize: updates.customFontSize } : {}),
+          ...(updates.customColor !== undefined ? { color: updates.customColor } : {}),
+          ...(updates.isBold !== undefined ? { isBold: updates.isBold } : {}),
+          ...(updates.isItalic !== undefined ? { isItalic: updates.isItalic } : {}),
+        }));
+      }
+      const nextItem: PdfTextItem = {
+        ...workingItem,
+        ...updates,
+        spans: updatedSpans,
+      };
+      const measuredW = measureTextItemWidth(nextItem, nextItem.text, nextItem.spans);
+      return {
+        ...nextItem,
+        width: measuredW > 0 ? Math.max(20, measuredW) : nextItem.width,
+      };
+    }));
+
+    if (selEnd > selStart) {
+      setEditSelectionRange({ id, start: selStart, end: selEnd });
+      requestAnimationFrame(() => {
+        const currentEl = document.getElementById(`edit-textarea-${id}`) as HTMLTextAreaElement | null;
+        if (currentEl) {
+          currentEl.focus();
+          currentEl.setSelectionRange(selStart, selEnd);
+        }
+      });
+    }
+  };
+
+  const handleSplitTextIntoWords = (id: string) => {
+    const target = pdfTexts.find(t => t.id === id);
+    if (!target) return;
+    const el = document.getElementById(`edit-textarea-${id}`) as HTMLTextAreaElement | null;
+    const textContent = el ? el.value : target.text;
+    const tokens = textContent.match(/\S+|\s+/g) || [];
+    const wordChecks = tokens.filter(tk => tk.trim().length > 0);
+    if (wordChecks.length <= 1) return;
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const baseSizePt = target.customFontSize || target.fontSize || 12;
+    const screenFontPx = baseSizePt * 1.5;
+    const cssFont = getFontFamily(target.customFontFamily || target.fontName);
+    if (ctx) {
+      ctx.font = `${target.isItalic ? 'italic ' : ''}${target.isBold ? '700 ' : '400 '}${screenFontPx}px ${cssFont}`;
+    }
+
+    const activeSpans = getNormalizedSpans({ ...target, text: textContent });
+    const getCharStyleAt = (charIdx: number): Omit<TextSpan, 'text'> => {
+      let p = 0;
+      for (const s of activeSpans) {
+        if (charIdx >= p && charIdx < p + s.text.length) {
+          return {
+            fontFamily: s.fontFamily || target.customFontFamily || 'Times New Roman',
+            fontSize: s.fontSize || baseSizePt,
+            color: s.color || target.customColor || '#000000',
+            isBold: s.isBold ?? target.isBold,
+            isItalic: s.isItalic ?? target.isItalic,
+          };
+        }
+        p += s.text.length;
+      }
+      return {
+        fontFamily: target.customFontFamily || 'Times New Roman',
+        fontSize: baseSizePt,
+        color: target.customColor || '#000000',
+        isBold: target.isBold,
+        isItalic: target.isItalic,
+      };
+    };
+
+    const rad = ((target.rotation || 0) * Math.PI) / 180;
+    const pageRot = pages[target.pageIndex]?.pageRotation || 0;
+    const screenRad = (((target.rotation || 0) - pageRot) * Math.PI) / 180;
+
+    const newItems: PdfTextItem[] = [];
+    let curOffsetPx = 0;
+    let charCursor = 0;
+    let wordCounter = 0;
+
+    for (const tk of tokens) {
+      const st = getCharStyleAt(charCursor);
+      const tkSizePx = (st.fontSize || baseSizePt) * 1.5;
+      if (ctx) {
+        ctx.font = `${st.isItalic ? 'italic ' : ''}${st.isBold ? '700 ' : '400 '}${tkSizePx}px ${getFontFamily(st.fontFamily || 'Times New Roman')}`;
+      }
+      const tkWidthPx = ctx ? ctx.measureText(tk).width : tk.length * (tkSizePx * 0.52);
+
+      if (tk.trim().length > 0) {
+        const offsetPt = curOffsetPx / 1.5;
+        const wordWidthPt = tkWidthPx / 1.5;
+        const newId = `${target.id}-w${wordCounter}-${Date.now().toString(36)}`;
+        newItems.push({
+          ...target,
+          id: newId,
+          text: tk,
+          originalText: tk,
+          x: target.x + (target.offsetX || 0) + curOffsetPx * Math.cos(screenRad),
+          y: target.y + (target.offsetY || 0) + curOffsetPx * Math.sin(screenRad),
+          baselineY: (target.baselineY ?? (target.y + target.height * 0.82)) + curOffsetPx * Math.sin(screenRad),
+          width: Math.max(10, tkWidthPx),
+          originalWidth: Math.max(10, tkWidthPx),
+          pdfX: target.pdfX + ((target.offsetX || 0) / 1.5) + offsetPt * Math.cos(rad),
+          pdfY: target.pdfY - ((target.offsetY || 0) / 1.5) + offsetPt * Math.sin(rad),
+          pdfWidth: Math.max(6, wordWidthPt),
+          pdfHeight: st.fontSize || baseSizePt,
+          fontSize: st.fontSize || baseSizePt,
+          customFontFamily: st.fontFamily || target.customFontFamily,
+          customFontSize: st.fontSize || baseSizePt,
+          customColor: st.color || target.customColor || '#000000',
+          isBold: !!st.isBold,
+          isItalic: !!st.isItalic,
+          offsetX: 0,
+          offsetY: 0,
+          isModified: true,
+          hasBackground: true,
+          spans: undefined,
+        });
+        wordCounter++;
+      }
+
+      curOffsetPx += tkWidthPx;
+      charCursor += tk.length;
+    }
+
+    if (newItems.length > 0) {
+      setPdfTexts(prev => {
+        const idx = prev.findIndex(item => item.id === id);
+        if (idx === -1) return prev;
+        const copy = [...prev];
+        copy.splice(idx, 1, ...newItems);
+        return copy;
+      });
+      setSelectedTextId(newItems[0].id);
+      setEditingTextId(newItems[0].id);
+      setEditSelectionRange(null);
+    }
   };
 
   const handleRestoreText = (id: string) => {
@@ -2796,12 +4162,14 @@ export default function App() {
           offsetX: 0,
           offsetY: 0,
           hasBackground: true,
-          rotation: 0
+          rotation: t.rotation || 0,
+          spans: undefined,
         };
       }
       return t;
     }));
     setEditingTextId(null);
+    setEditSelectionRange(null);
   };
 
   const handleMouseDown = (e: React.MouseEvent, pageIndex: number) => {
@@ -2810,6 +4178,7 @@ export default function App() {
       setSelectedHighlightId(null);
       setSelectedTextBoxId(null);
       setEditingTextBoxId(null);
+      setSelectedImageId(null);
       return;
     }
     if (activeTool === 'Select') {
@@ -2818,6 +4187,7 @@ export default function App() {
       setSelectedTextBoxId(null);
       setEditingTextBoxId(null);
       setSelectedShapeId(null);
+      setSelectedImageId(null);
       return;
     }
     if (activeTool !== 'Signature Field' && activeTool !== 'Highlight' && activeTool !== 'Text Box' && activeTool !== 'Rectangle' && activeTool !== 'Circle') return;
@@ -2827,6 +4197,7 @@ export default function App() {
     setSelectedTextBoxId(null);
     setEditingTextBoxId(null);
     setSelectedShapeId(null);
+    setSelectedImageId(null);
     const pageElement = e.currentTarget as HTMLDivElement;
     const rect = pageElement.getBoundingClientRect();
     if (!rect) return;
@@ -2881,6 +4252,108 @@ export default function App() {
     }
   };
 
+  const handleImageResizeDown = (e: React.MouseEvent, img: PdfImageItem, type: 'drag' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw') => {
+    if (isDigitallySigned) return;
+    e.stopPropagation();
+    const pageElement = (e.currentTarget as HTMLElement).closest('[id^="page-"]') as HTMLDivElement;
+    if (pageElement) {
+      const rect = pageElement.getBoundingClientRect();
+      const startX = (e.clientX - rect.left) / zoom;
+      const startY = (e.clientY - rect.top) / zoom;
+      setImageInteraction({
+        id: img.id,
+        type,
+        startX,
+        startY,
+        originalX: img.x,
+        originalY: img.y,
+        originalWidth: img.width,
+        originalHeight: img.height,
+        pageIndex: img.pageIndex,
+        aspectRatio: img.aspectRatio || (img.width / Math.max(1, img.height)),
+      });
+      setSelectedImageId(img.id);
+    }
+  };
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (isDigitallySigned) {
+      alert("Tài liệu hiện tại đã được ký số. Không thể chèn ảnh.");
+      if (imageInputRef.current) imageInputRef.current.value = '';
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const rawDataUrl = reader.result as string;
+      const imgEl = new window.Image();
+      imgEl.onload = () => {
+        const natW = Math.max(1, imgEl.naturalWidth || imgEl.width || 200);
+        const natH = Math.max(1, imgEl.naturalHeight || imgEl.height || 200);
+        const aspect = natW / natH;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = natW;
+        canvas.height = natH;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(imgEl, 0, 0, natW, natH);
+        }
+        const pngDataUrl = canvas.toDataURL('image/png');
+
+        const targetPageIdx = Math.max(0, Math.min((pages.length || 1) - 1, currentPage - 1));
+        const targetPage = pages[targetPageIdx];
+        const pageW = targetPage ? targetPage.width : 800;
+        const pageH = targetPage ? targetPage.height : 1131;
+
+        const maxInitW = Math.min(240, pageW * 0.4);
+        const maxInitH = Math.min(240, pageH * 0.4);
+        let initW = natW;
+        let initH = natH;
+        if (initW > maxInitW) {
+          initW = maxInitW;
+          initH = initW / aspect;
+        }
+        if (initH > maxInitH) {
+          initH = maxInitH;
+          initW = initH * aspect;
+        }
+        initW = Math.max(40, Math.round(initW));
+        initH = Math.max(40, Math.round(initH));
+
+        const initX = Math.max(20, Math.round((pageW - initW) / 2));
+        const initY = Math.max(20, Math.round(Math.min(pageH - initH - 20, pageH * 0.25)));
+
+        const newId = `img-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+        setImages(prev => [
+          ...prev,
+          {
+            id: newId,
+            pageIndex: targetPageIdx,
+            x: initX,
+            y: initY,
+            width: initW,
+            height: initH,
+            dataUrl: pngDataUrl,
+            aspectRatio: aspect,
+          },
+        ]);
+        setSelectedImageId(newId);
+        setSelectedFieldId(null);
+        setSelectedHighlightId(null);
+        setSelectedTextBoxId(null);
+        setSelectedShapeId(null);
+        setSelectedTextId(null);
+        setActiveTool('Select');
+      };
+      imgEl.src = rawDataUrl;
+    };
+    reader.readAsDataURL(file);
+    if (imageInputRef.current) imageInputRef.current.value = '';
+  };
+
   const handleTextBoxResizeDown = (e: React.MouseEvent, tb: TextBoxItem, type: 'drag' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw') => {
     if (isDigitallySigned) return;
     e.stopPropagation();
@@ -2921,6 +4394,10 @@ export default function App() {
       setShapeInteraction(null);
       return;
     }
+    if (imageInteraction) {
+      setImageInteraction(null);
+      return;
+    }
     
     if (!drawing) return;
 
@@ -2957,14 +4434,15 @@ export default function App() {
     }
 
     if (activeTool === 'Text Box') {
-      let width = Math.abs(drawing.currentX - drawing.startX);
-      let height = Math.abs(drawing.currentY - drawing.startY);
-      let x = Math.min(drawing.startX, drawing.currentX);
-      let y = Math.min(drawing.startY, drawing.currentY);
+      const width = Math.abs(drawing.currentX - drawing.startX);
+      const height = Math.abs(drawing.currentY - drawing.startY);
+      const x = Math.min(drawing.startX, drawing.currentX);
+      const y = Math.min(drawing.startY, drawing.currentY);
 
+      // Chỉ tạo khung thêm chữ khi người dùng nhấn giữ và kéo chuột (không tự tạo khi chỉ click chuột)
       if (width < 10 || height < 10) {
-        width = 180;
-        height = 50;
+        setDrawing(null);
+        return;
       }
 
       const newId = `tb-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
@@ -2978,6 +4456,7 @@ export default function App() {
         text: 'Nhập nội dung chữ...',
         fontFamily: tbFontFamily,
         fontSize: tbFontSize,
+        lineHeight: tbLineHeight,
         isBold: tbIsBold,
         isItalic: tbIsItalic,
         color: tbColor,
@@ -3088,19 +4567,23 @@ export default function App() {
       const safeSerifRegular = loadedFonts?.serifRegular || fontsRef.current.serifRegular || fontSerifRegular || vietnameseFontBytes || fontSansRegular;
       const safeSerifBold = loadedFonts?.serifBold || fontsRef.current.serifBold || fontSerifBold || safeSerifRegular;
       const safeSerifItalic = loadedFonts?.serifItalic || fontsRef.current.serifItalic || fontSerifItalic || safeSerifRegular;
+      const safeSerifBoldItalic = loadedFonts?.serifBoldItalic || fontsRef.current.serifBoldItalic || fontSerifBoldItalic || safeSerifItalic || safeSerifBold;
 
       const safeSansRegular = loadedFonts?.sansRegular || fontsRef.current.sansRegular || fontSansRegular || vietnameseFontBytes || fontSerifRegular;
       const safeSansBold = loadedFonts?.sansBold || fontsRef.current.sansBold || fontSansBold || safeSansRegular;
       const safeSansItalic = loadedFonts?.sansItalic || fontsRef.current.sansItalic || fontSansItalic || safeSansRegular;
+      const safeSansBoldItalic = loadedFonts?.sansBoldItalic || fontsRef.current.sansBoldItalic || fontSansBoldItalic || safeSansItalic || safeSansBold;
 
       // Embed all custom fonts for high-quality Vietnamese text
       const embeddedSerifRegular = safeSerifRegular ? await pdfDoc.embedFont(safeSerifRegular) : await pdfDoc.embedFont(pdfLib.StandardFonts.TimesRoman);
       const embeddedSerifBold = safeSerifBold ? await pdfDoc.embedFont(safeSerifBold) : await pdfDoc.embedFont(pdfLib.StandardFonts.TimesRomanBold);
       const embeddedSerifItalic = safeSerifItalic ? await pdfDoc.embedFont(safeSerifItalic) : await pdfDoc.embedFont(pdfLib.StandardFonts.TimesRomanItalic);
+      const embeddedSerifBoldItalic = safeSerifBoldItalic ? await pdfDoc.embedFont(safeSerifBoldItalic) : await pdfDoc.embedFont(pdfLib.StandardFonts.TimesRomanBoldItalic);
       
       const embeddedSansRegular = safeSansRegular ? await pdfDoc.embedFont(safeSansRegular) : await pdfDoc.embedFont(pdfLib.StandardFonts.Helvetica);
       const embeddedSansBold = safeSansBold ? await pdfDoc.embedFont(safeSansBold) : await pdfDoc.embedFont(pdfLib.StandardFonts.HelveticaBold);
       const embeddedSansItalic = safeSansItalic ? await pdfDoc.embedFont(safeSansItalic) : await pdfDoc.embedFont(pdfLib.StandardFonts.HelveticaOblique);
+      const embeddedSansBoldItalic = safeSansBoldItalic ? await pdfDoc.embedFont(safeSansBoldItalic) : await pdfDoc.embedFont(pdfLib.StandardFonts.HelveticaBoldOblique);
 
       const hexToRgb = (hex: string) => {
         const cleanHex = (hex || '#000000').replace('#', '');
@@ -3128,51 +4611,87 @@ export default function App() {
             const fontSizeToUse = t.customFontSize || t.pdfHeight;
 
             // Draw white box to whiteout/erase old text if hasBackground is true
-            // Choose font based on user settings (Times New Roman, Arial, Roboto, etc.)
-            const fontNameLower = (t.customFontFamily || t.fontName || '').toLowerCase();
-            const isSans = fontNameLower.includes('sans') || fontNameLower.includes('arial') || fontNameLower.includes('roboto') || fontNameLower.includes('helvetica') || fontNameLower.includes('calibri');
-            let fontToUse;
-            if (isSans) {
-              if (t.isBold) fontToUse = embeddedSansBold;
-              else if (t.isItalic) fontToUse = embeddedSansItalic;
-              else fontToUse = embeddedSansRegular;
-            } else {
-              if (t.isBold) fontToUse = embeddedSerifBold;
-              else if (t.isItalic) fontToUse = embeddedSerifItalic;
-              else fontToUse = embeddedSerifRegular;
-            }
+            const selectFontForProps = (fam: string, bold?: boolean, italic?: boolean) => {
+              const cleanFam = getCleanFontDisplayName(fam);
+              const sans = cleanFam === 'Arial' || cleanFam === 'Roboto';
+              if (sans) {
+                if (bold && italic) return embeddedSansBoldItalic;
+                if (italic) return embeddedSansItalic;
+                if (bold) return embeddedSansBold;
+                return embeddedSansRegular;
+              }
+              if (bold && italic) return embeddedSerifBoldItalic;
+              if (italic) return embeddedSerifItalic;
+              if (bold) return embeddedSerifBold;
+              return embeddedSerifRegular;
+            };
+
+            const fontToUse = selectFontForProps(t.customFontFamily || t.fontName || '', t.isBold, t.isItalic);
+            const activeSpans = getNormalizedSpans(t);
+            const maxSpanFontSize = Math.max(fontSizeToUse, ...activeSpans.map(s => s.fontSize || fontSizeToUse));
 
             // Draw white box to whiteout/erase old text if hasBackground is true
             if (t.hasBackground !== false) {
-              let textWidthInPdf = t.pdfWidth * 1.05 + 2;
-              try {
-                const computedWidth = fontToUse.widthOfTextAtSize(t.text, fontSizeToUse);
-                if (computedWidth > 0) {
-                  textWidthInPdf = Math.max(textWidthInPdf, computedWidth + 4);
-                }
-              } catch (e) {
-                // ignore
-              }
-
+              const origBoxH = Math.max(t.pdfHeight, maxSpanFontSize);
+              // 1. Erase original text span completely
               page.drawRectangle({
-                 x: finalPdfX - 1,
-                 y: finalPdfY - fontSizeToUse * 0.25,
-                 width: textWidthInPdf,
-                 height: fontSizeToUse * 1.35,
-                 color: pdfLib.rgb(1, 1, 1),
-                 rotate: pdfLib.degrees(t.rotation || 0),
+                x: t.pdfX - 1.5,
+                y: t.pdfY - origBoxH * 0.26,
+                width: t.pdfWidth * 1.04 + 3,
+                height: origBoxH * 1.34,
+                color: pdfLib.rgb(1, 1, 1),
+                rotate: pdfLib.degrees(t.rotation || 0),
               });
+
+              // 2. Also cover new text span if nudged or wider
+              let newTextWidthInPdf = 0;
+              try {
+                for (const seg of activeSpans) {
+                  const segFont = selectFontForProps(seg.fontFamily || t.customFontFamily || t.fontName || '', seg.isBold ?? t.isBold, seg.isItalic ?? t.isItalic);
+                  const segSize = seg.fontSize || fontSizeToUse;
+                  newTextWidthInPdf += segFont.widthOfTextAtSize(seg.text, segSize);
+                }
+              } catch (e) {}
+              if (newTextWidthInPdf > 0) {
+                page.drawRectangle({
+                  x: finalPdfX - 1,
+                  y: finalPdfY - maxSpanFontSize * 0.25,
+                  width: newTextWidthInPdf + 2,
+                  height: maxSpanFontSize * 1.32,
+                  color: pdfLib.rgb(1, 1, 1),
+                  rotate: pdfLib.degrees(t.rotation || 0),
+                });
+              }
             }
 
-            // Draw new edited text
-            page.drawText(t.text, {
-               x: finalPdfX,
-               y: finalPdfY,
-               size: fontSizeToUse,
-               font: fontToUse,
-               color: hexToRgb(t.customColor || '#000000'),
-               rotate: pdfLib.degrees(t.rotation || 0),
-            });
+            // Draw new edited text (supports per-word font size, color, bold, italic via spans)
+            if (t.text) {
+              const rad = ((t.rotation || 0) * Math.PI) / 180;
+              let curX = finalPdfX;
+              let curY = finalPdfY;
+              for (const seg of activeSpans) {
+                if (!seg.text) continue;
+                const segFont = selectFontForProps(seg.fontFamily || t.customFontFamily || t.fontName || '', seg.isBold ?? t.isBold, seg.isItalic ?? t.isItalic);
+                const segSize = seg.fontSize || fontSizeToUse;
+                const segColor = hexToRgb(seg.color || t.customColor || '#000000');
+                try {
+                  page.drawText(seg.text, {
+                    x: curX,
+                    y: curY,
+                    size: segSize,
+                    font: segFont,
+                    color: segColor,
+                    rotate: pdfLib.degrees(t.rotation || 0),
+                  });
+                } catch (e) {}
+                let segW = seg.text.length * (segSize * 0.5);
+                try {
+                  segW = segFont.widthOfTextAtSize(seg.text, segSize);
+                } catch (e) {}
+                curX += segW * Math.cos(rad);
+                curY += segW * Math.sin(rad);
+              }
+            }
          }
       }
 
@@ -3580,9 +5099,17 @@ export default function App() {
         const canvasWidth = parsedPage.width;
         const canvasHeight = parsedPage.height;
 
+        const effectiveViewBox: [number, number, number, number] = parsedPage.viewBox || [
+          boxX,
+          boxY,
+          boxX + visibleWidth,
+          boxY + visibleHeight,
+        ];
+        const effectiveAngle = typeof parsedPage.pageRotation === 'number' ? parsedPage.pageRotation : angle;
+
         const { m, width: effW, height: effH, rot } = getPageTransformMatrix(
-          [boxX, boxY, boxX + visibleWidth, boxY + visibleHeight],
-          angle
+          effectiveViewBox,
+          effectiveAngle
         );
         const scaleX = effW / canvasWidth;
         const scaleY = effH / canvasHeight;
@@ -3616,30 +5143,45 @@ export default function App() {
           }
 
           const textColor = hexToRgb(tb.color || '#000000');
-          const fontSizeToUse = (tb.fontSize || 12);
-          const lineHeight = fontSizeToUse * 1.25;
+          const selectTbFont = (ffName: string, bold?: boolean, italic?: boolean) => {
+            const cleanFam = getCleanFontDisplayName(ffName);
+            const isSans = cleanFam === 'Arial' || cleanFam === 'Roboto';
+            if (isSans) {
+              if (bold && italic) return embeddedSansBoldItalic;
+              if (italic) return embeddedSansItalic;
+              if (bold) return embeddedSansBold;
+              return embeddedSansRegular;
+            }
+            if (bold && italic) return embeddedSerifBoldItalic;
+            if (italic) return embeddedSerifItalic;
+            if (bold) return embeddedSerifBold;
+            return embeddedSerifRegular;
+          };
 
-          // Select matching font
-          const fontNameLower = (tb.fontFamily || '').toLowerCase();
-          const isSans = fontNameLower.includes('sans') || fontNameLower.includes('arial') || fontNameLower.includes('roboto') || fontNameLower.includes('helvetica') || fontNameLower.includes('calibri');
-          let fontToUse;
-          if (isSans) {
-            if (tb.isBold) fontToUse = embeddedSansBold;
-            else if (tb.isItalic) fontToUse = embeddedSansItalic;
-            else fontToUse = embeddedSansRegular;
-          } else {
-            if (tb.isBold) fontToUse = embeddedSerifBold;
-            else if (tb.isItalic) fontToUse = embeddedSerifItalic;
-            else fontToUse = embeddedSerifRegular;
-          }
+          const spanLines = tb.text && tb.text.trim() ? wrapTextBoxSpansToLines(tb) : [];
+          const activeTbSpans = getNormalizedTextBoxSpans(tb);
+          const maxSpanSizePt = Math.max(
+            tb.fontSize || 12,
+            ...activeTbSpans.map(s => s.fontSize || tb.fontSize || 12)
+          );
+          const baseFontSizeToUse = (maxSpanSizePt * 1.5) * ((scaleX + scaleY) / 2);
+          const lineHeightMult = tb.lineHeight || 1.25;
+          const lineHeight = baseFontSizeToUse * lineHeightMult;
+
+          const actualBoxHeightScreen = Math.max(
+            tb.height,
+            spanLines.length * (maxSpanSizePt * 1.5) * lineHeightMult + 8
+          );
+          const effectivePdfBoxH = actualBoxHeightScreen * scaleY;
+          const effectiveBl = screenToPdfPoint(tb.x * scaleX, (tb.y + actualBoxHeightScreen) * scaleY, m);
 
           // 1. Draw white background if requested (to cover old text or highlight box)
           if (tb.hasBackground) {
             page.drawRectangle({
-              x: pdfBl.x,
-              y: pdfBl.y,
+              x: effectiveBl.x,
+              y: effectiveBl.y,
               width: pdfBoxW,
-              height: pdfBoxH,
+              height: effectivePdfBoxH,
               color: pdfLib.rgb(1, 1, 1),
               borderWidth: tb.hasBorder ? 1 : 0,
               borderColor: tb.hasBorder ? textColor : undefined,
@@ -3647,81 +5189,65 @@ export default function App() {
             });
           } else if (tb.hasBorder) {
             page.drawRectangle({
-              x: pdfBl.x,
-              y: pdfBl.y,
+              x: effectiveBl.x,
+              y: effectiveBl.y,
               width: pdfBoxW,
-              height: pdfBoxH,
+              height: effectivePdfBoxH,
               borderWidth: 1,
               borderColor: textColor,
               rotate: pdfLib.degrees(rot),
             });
           }
 
-          // 2. Draw text lines directly on page
-          if (tb.text && tb.text.trim()) {
-            const rawLines = tb.text.split('\n');
-            const finalLines: string[] = [];
-            const maxLineWidth = Math.max(10, pdfBoxW - 8);
+          // 2. Draw text lines directly on page with per-span bold, italic, fontSize, and color
+          if (spanLines.length > 0) {
+            for (let lineIdx = 0; lineIdx < spanLines.length; lineIdx++) {
+              const lineSpans = spanLines[lineIdx];
+              if (!lineSpans || lineSpans.length === 0) continue;
+              const lineScreenY = (tb.y + 4) * scaleY + (lineHeight - baseFontSizeToUse) * 0.5 + baseFontSizeToUse * 0.82 + lineIdx * lineHeight;
 
-            for (const rLine of rawLines) {
-              if (!rLine) {
-                finalLines.push('');
-                continue;
-              }
-              const words = rLine.split(' ');
-              let curLine = '';
-              for (const word of words) {
-                const test = curLine ? `${curLine} ${word}` : word;
-                let testW = test.length * (fontSizeToUse * 0.52);
+              let lineTotalW = 0;
+              for (const seg of lineSpans) {
+                const segFont = selectTbFont(seg.fontFamily || tb.fontFamily || 'Times New Roman', seg.isBold ?? tb.isBold, seg.isItalic ?? tb.isItalic);
+                const segSize = ((seg.fontSize || tb.fontSize || 12) * 1.5) * ((scaleX + scaleY) / 2);
+                let segW = seg.text.length * (segSize * 0.52);
                 try {
-                  testW = fontToUse.widthOfTextAtSize(test, fontSizeToUse);
+                  segW = segFont.widthOfTextAtSize(seg.text, segSize);
                 } catch (e) {}
-                if (testW > maxLineWidth && curLine) {
-                  finalLines.push(curLine);
-                  curLine = word;
-                } else {
-                  curLine = test;
-                }
+                lineTotalW += segW;
               }
-              if (curLine) {
-                finalLines.push(curLine);
+
+              let padXPt = 4 * scaleX;
+              if (tb.textAlign === 'center') {
+                padXPt = Math.max(4 * scaleX, (pdfBoxW - lineTotalW) / 2);
+              } else if (tb.textAlign === 'right') {
+                padXPt = Math.max(4 * scaleX, pdfBoxW - lineTotalW - 4 * scaleX);
               }
-            }
 
-            for (let lineIdx = 0; lineIdx < finalLines.length; lineIdx++) {
-              const line = finalLines[lineIdx];
-              const lineScreenY = (tb.y + 4 + fontSizeToUse + lineIdx * lineHeight) * scaleY;
-              if (lineScreenY > (tb.y + tb.height + fontSizeToUse) * scaleY) break;
-
-              if (line) {
-                let padX = 4;
-                if (tb.textAlign === 'center' || tb.textAlign === 'right') {
-                  let lineW = line.length * (fontSizeToUse * 0.52);
-                  try {
-                    lineW = fontToUse.widthOfTextAtSize(line, fontSizeToUse);
-                  } catch (e) {}
-                  if (tb.textAlign === 'center') {
-                    padX = Math.max(4, (pdfBoxW - lineW) / 2);
-                  } else if (tb.textAlign === 'right') {
-                    padX = Math.max(4, pdfBoxW - lineW - 4);
-                  }
-                }
-
-                const lineScreenX = (tb.x + padX) * scaleX;
-                const pdfLinePt = screenToPdfPoint(lineScreenX, lineScreenY, m);
-
+              let curScreenX = tb.x * scaleX + padXPt;
+              for (const seg of lineSpans) {
+                if (!seg.text) continue;
+                const segFont = selectTbFont(seg.fontFamily || tb.fontFamily || 'Times New Roman', seg.isBold ?? tb.isBold, seg.isItalic ?? tb.isItalic);
+                const segSize = ((seg.fontSize || tb.fontSize || 12) * 1.5) * ((scaleX + scaleY) / 2);
+                const segColor = hexToRgb(seg.color || tb.color || '#000000');
+                const pdfSegPt = screenToPdfPoint(curScreenX, lineScreenY, m);
                 try {
-                  page.drawText(line, {
-                    x: pdfLinePt.x,
-                    y: pdfLinePt.y,
-                    size: fontSizeToUse,
-                    font: fontToUse,
-                    color: textColor,
+                  page.drawText(seg.text, {
+                    x: pdfSegPt.x,
+                    y: pdfSegPt.y,
+                    size: segSize,
+                    font: segFont,
+                    color: segColor,
                     rotate: pdfLib.degrees(rot),
                   });
                 } catch (e) {
-                  console.warn('Error drawing text line in PDF:', e);
+                  console.warn('Error drawing text span in PDF:', e);
                 }
+                let segW = seg.text.length * (segSize * 0.52);
+                try {
+                  segW = segFont.widthOfTextAtSize(seg.text, segSize);
+                } catch (e) {}
+                curScreenX += segW;
               }
             }
           }
@@ -3764,9 +5290,17 @@ export default function App() {
         const canvasWidth = parsedPage.width;
         const canvasHeight = parsedPage.height;
 
+        const effectiveViewBox: [number, number, number, number] = parsedPage.viewBox || [
+          boxX,
+          boxY,
+          boxX + visibleWidth,
+          boxY + visibleHeight,
+        ];
+        const effectiveAngle = typeof parsedPage.pageRotation === 'number' ? parsedPage.pageRotation : angle;
+
         const { m, width: effW, height: effH } = getPageTransformMatrix(
-          [boxX, boxY, boxX + visibleWidth, boxY + visibleHeight],
-          angle
+          effectiveViewBox,
+          effectiveAngle
         );
         const scaleX = effW / canvasWidth;
         const scaleY = effH / canvasHeight;
@@ -3837,6 +5371,27 @@ export default function App() {
           }
           (pageAnnotsArr as any).push(annotRef);
         }
+
+        const pageImages = images.filter(img => img.pageIndex === pIdx);
+        for (const img of pageImages) {
+          try {
+            const embeddedPng = await pdfDoc.embedPng(img.dataUrl);
+            const { m: imgM, rot: imgRot } = getPageTransformMatrix(
+              effectiveViewBox,
+              effectiveAngle
+            );
+            const blImg = screenToPdfPoint(img.x * scaleX, (img.y + img.height) * scaleY, imgM);
+            page.drawImage(embeddedPng, {
+              x: blImg.x,
+              y: blImg.y,
+              width: img.width * scaleX,
+              height: img.height * scaleY,
+              rotate: pdfLib.degrees(imgRot),
+            });
+          } catch (imgErr) {
+            console.warn('Error embedding image in PDF:', imgErr);
+          }
+        }
       }
 
       // Embed highlights and shapes metadata into PDF so they can be reopened and edited later
@@ -3849,14 +5404,9 @@ export default function App() {
       const pdfBytes = await pdfDoc.save();
       setInitialFieldNames(fields.map(f => f.name));
       setFields(fields.map(f => ({ ...f, originalName: f.name })));
-      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      
+
       const rawName = customFilename || documentName;
       const downloadName = rawName.endsWith('.pdf') ? rawName : `${rawName}.pdf`;
-      a.download = downloadName;
 
       try {
         localStorage.setItem(`pdf_highlights_${downloadName}`, JSON.stringify(highlights));
@@ -3871,15 +5421,741 @@ export default function App() {
       } catch (e) {
         // ignore
       }
-      
+
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = downloadName;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      
+
+      triggerSaveToast(`Đã lưu "${downloadName}"`, 'Đã tải tệp PDF đã cập nhật về máy.');
     } catch(err) {
       console.error(err);
       alert("Không thể xuất file PDF.");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleDirectSave = async (forceSaveAs: boolean = false) => {
+    if (!originalPdfBuffer) {
+      alert("Vui lòng nhập tài liệu PDF trước khi lưu.");
+      return;
+    }
+
+    setShowSaveDropdown(false);
+    setIsProcessing(true);
+    try {
+      // 1. Acquire or verify FileSystemFileHandle BEFORE heavy PDF processing if Save As is requested or no handle exists yet
+      let targetHandle = forceSaveAs ? null : fileHandleRef.current;
+      const rawName = documentName || 'tai-lieu.pdf';
+      const suggestedName = rawName.endsWith('.pdf') ? rawName : `${rawName}.pdf`;
+
+      if (!targetHandle && typeof (window as any).showSaveFilePicker === 'function') {
+        try {
+          targetHandle = await (window as any).showSaveFilePicker({
+            suggestedName,
+            types: [
+              {
+                description: 'Tài liệu PDF (*.pdf)',
+                accept: { 'application/pdf': ['.pdf'] },
+              },
+            ],
+          });
+          if (targetHandle) {
+            fileHandleRef.current = targetHandle;
+            setHasDirectFileHandle(true);
+            if (targetHandle.name) {
+              setDocumentName(targetHandle.name);
+            }
+          }
+        } catch (pickerErr: any) {
+          if (pickerErr && pickerErr.name === 'AbortError') {
+            setIsProcessing(false);
+            return;
+          }
+          // If SecurityError (e.g. inside cross-origin preview iframe), fallback to direct download below
+          targetHandle = null;
+        }
+      } else if (targetHandle && typeof targetHandle.queryPermission === 'function') {
+        try {
+          const perm = await targetHandle.queryPermission({ mode: 'readwrite' });
+          if (perm !== 'granted' && typeof targetHandle.requestPermission === 'function') {
+            const reqPerm = await targetHandle.requestPermission({ mode: 'readwrite' });
+            if (reqPerm !== 'granted') {
+              setIsProcessing(false);
+              return;
+            }
+          }
+        } catch (permErr: any) {
+          if (permErr && permErr.name === 'AbortError') {
+            setIsProcessing(false);
+            return;
+          }
+        }
+      }
+
+      // 2. Build the updated PDF bytes using the exact same pipeline as exportToPDF
+      const loadedFonts = await ensureFontsLoaded();
+      const pdfDoc = await PDFDocument.load(originalPdfBuffer);
+      pdfDoc.registerFontkit(fontkit);
+
+      const safeSerifRegular = loadedFonts?.serifRegular || fontsRef.current.serifRegular || fontSerifRegular || vietnameseFontBytes || fontSansRegular;
+      const safeSerifBold = loadedFonts?.serifBold || fontsRef.current.serifBold || fontSerifBold || safeSerifRegular;
+      const safeSerifItalic = loadedFonts?.serifItalic || fontsRef.current.serifItalic || fontSerifItalic || safeSerifRegular;
+      const safeSerifBoldItalic = loadedFonts?.serifBoldItalic || fontsRef.current.serifBoldItalic || fontSerifBoldItalic || safeSerifItalic || safeSerifBold;
+
+      const safeSansRegular = loadedFonts?.sansRegular || fontsRef.current.sansRegular || fontSansRegular || vietnameseFontBytes || fontSerifRegular;
+      const safeSansBold = loadedFonts?.sansBold || fontsRef.current.sansBold || fontSansBold || safeSansRegular;
+      const safeSansItalic = loadedFonts?.sansItalic || fontsRef.current.sansItalic || fontSansItalic || safeSansRegular;
+      const safeSansBoldItalic = loadedFonts?.sansBoldItalic || fontsRef.current.sansBoldItalic || fontSansBoldItalic || safeSansItalic || safeSansBold;
+
+      const embeddedSerifRegular = safeSerifRegular ? await pdfDoc.embedFont(safeSerifRegular) : await pdfDoc.embedFont(pdfLib.StandardFonts.TimesRoman);
+      const embeddedSerifBold = safeSerifBold ? await pdfDoc.embedFont(safeSerifBold) : await pdfDoc.embedFont(pdfLib.StandardFonts.TimesRomanBold);
+      const embeddedSerifItalic = safeSerifItalic ? await pdfDoc.embedFont(safeSerifItalic) : await pdfDoc.embedFont(pdfLib.StandardFonts.TimesRomanItalic);
+      const embeddedSerifBoldItalic = safeSerifBoldItalic ? await pdfDoc.embedFont(safeSerifBoldItalic) : await pdfDoc.embedFont(pdfLib.StandardFonts.TimesRomanBoldItalic);
+
+      const embeddedSansRegular = safeSansRegular ? await pdfDoc.embedFont(safeSansRegular) : await pdfDoc.embedFont(pdfLib.StandardFonts.Helvetica);
+      const embeddedSansBold = safeSansBold ? await pdfDoc.embedFont(safeSansBold) : await pdfDoc.embedFont(pdfLib.StandardFonts.HelveticaBold);
+      const embeddedSansItalic = safeSansItalic ? await pdfDoc.embedFont(safeSansItalic) : await pdfDoc.embedFont(pdfLib.StandardFonts.HelveticaOblique);
+      const embeddedSansBoldItalic = safeSansBoldItalic ? await pdfDoc.embedFont(safeSansBoldItalic) : await pdfDoc.embedFont(pdfLib.StandardFonts.HelveticaBoldOblique);
+
+      const hexToRgb = (hex: string) => {
+        const cleanHex = (hex || '#000000').replace('#', '');
+        const r = parseInt(cleanHex.substring(0, 2), 16) / 255;
+        const g = parseInt(cleanHex.substring(2, 4), 16) / 255;
+        const b = parseInt(cleanHex.substring(4, 6), 16) / 255;
+        return pdfLib.rgb(isNaN(r) ? 0 : r, isNaN(g) ? 0 : g, isNaN(b) ? 0 : b);
+      };
+
+      const form = pdfDoc.getForm();
+      const pdfPages = pdfDoc.getPages();
+
+      const modifiedTexts = pdfTexts.filter(t => t.isModified);
+      for (const t of modifiedTexts) {
+        if (t.pageIndex < pdfPages.length) {
+          const page = pdfPages[t.pageIndex];
+          const pdfOffsetX = (t.offsetX || 0) / 1.5;
+          const pdfOffsetY = -(t.offsetY || 0) / 1.5;
+          const finalPdfX = t.pdfX + pdfOffsetX;
+          const finalPdfY = t.pdfY + pdfOffsetY;
+          const fontSizeToUse = t.customFontSize || t.pdfHeight;
+          const selectFontForProps = (fam: string, bold?: boolean, italic?: boolean) => {
+            const cleanFam = getCleanFontDisplayName(fam);
+            const sans = cleanFam === 'Arial' || cleanFam === 'Roboto';
+            if (sans) {
+              if (bold && italic) return embeddedSansBoldItalic;
+              if (italic) return embeddedSansItalic;
+              if (bold) return embeddedSansBold;
+              return embeddedSansRegular;
+            }
+            if (bold && italic) return embeddedSerifBoldItalic;
+            if (italic) return embeddedSerifItalic;
+            if (bold) return embeddedSerifBold;
+            return embeddedSerifRegular;
+          };
+
+          const activeSpans = getNormalizedSpans(t);
+          const maxSpanFontSize = Math.max(fontSizeToUse, ...activeSpans.map(s => s.fontSize || fontSizeToUse));
+
+          if (t.hasBackground !== false) {
+            const origBoxH = Math.max(t.pdfHeight, maxSpanFontSize);
+            page.drawRectangle({
+              x: t.pdfX - 1.5,
+              y: t.pdfY - origBoxH * 0.26,
+              width: t.pdfWidth * 1.04 + 3,
+              height: origBoxH * 1.34,
+              color: pdfLib.rgb(1, 1, 1),
+              rotate: pdfLib.degrees(t.rotation || 0),
+            });
+
+            let newTextWidthInPdf = 0;
+            try {
+              for (const seg of activeSpans) {
+                const segFont = selectFontForProps(seg.fontFamily || t.customFontFamily || t.fontName || '', seg.isBold ?? t.isBold, seg.isItalic ?? t.isItalic);
+                const segSize = seg.fontSize || fontSizeToUse;
+                newTextWidthInPdf += segFont.widthOfTextAtSize(seg.text, segSize);
+              }
+            } catch (e) {}
+            if (newTextWidthInPdf > 0) {
+              page.drawRectangle({
+                x: finalPdfX - 1,
+                y: finalPdfY - maxSpanFontSize * 0.25,
+                width: newTextWidthInPdf + 2,
+                height: maxSpanFontSize * 1.32,
+                color: pdfLib.rgb(1, 1, 1),
+                rotate: pdfLib.degrees(t.rotation || 0),
+              });
+            }
+          }
+
+          if (t.text) {
+            const rad = ((t.rotation || 0) * Math.PI) / 180;
+            let curX = finalPdfX;
+            let curY = finalPdfY;
+            for (const seg of activeSpans) {
+              if (!seg.text) continue;
+              const segFont = selectFontForProps(seg.fontFamily || t.customFontFamily || t.fontName || '', seg.isBold ?? t.isBold, seg.isItalic ?? t.isItalic);
+              const segSize = seg.fontSize || fontSizeToUse;
+              const segColor = hexToRgb(seg.color || t.customColor || '#000000');
+              try {
+                page.drawText(seg.text, {
+                  x: curX,
+                  y: curY,
+                  size: segSize,
+                  font: segFont,
+                  color: segColor,
+                  rotate: pdfLib.degrees(t.rotation || 0),
+                });
+              } catch (e) {}
+              let segW = seg.text.length * (segSize * 0.5);
+              try {
+                segW = segFont.widthOfTextAtSize(seg.text, segSize);
+              } catch (e) {}
+              curX += segW * Math.cos(rad);
+              curY += segW * Math.sin(rad);
+            }
+          }
+        }
+      }
+
+      const namesToRemove = new Set<string>(initialFieldNames);
+      fields.forEach(f => {
+        if (f.originalName) namesToRemove.add(f.originalName);
+        namesToRemove.add(f.name);
+        namesToRemove.add(f.id);
+      });
+      namesToRemove.forEach(fieldName => safeRemoveField(pdfDoc, fieldName));
+
+      for (let i = 0; i < fields.length; i++) {
+        const f = fields[i];
+        if (f.pageIndex < pdfPages.length) {
+          const page = pdfPages[f.pageIndex];
+          const { width, height } = page.getSize();
+          let angle = 0;
+          try {
+            const rot = page.getRotation();
+            if (rot && typeof rot.angle === 'number') angle = rot.angle;
+            else if (typeof rot === 'number') angle = rot;
+          } catch (e) {}
+          angle = (angle % 360 + 360) % 360;
+
+          let visibleWidth = width, visibleHeight = height, boxX = 0, boxY = 0;
+          try {
+            const cropBox = page.getCropBox();
+            if (cropBox) {
+              boxX = cropBox.x || 0;
+              boxY = cropBox.y || 0;
+              visibleWidth = cropBox.width;
+              visibleHeight = cropBox.height;
+            }
+          } catch (e) {}
+
+          const parsedPage = pages[f.pageIndex];
+          const canvasWidth = parsedPage.width;
+          const canvasHeight = parsedPage.height;
+          let fieldX = 0, fieldY = 0, fieldWidth = 0, fieldHeight = 0;
+
+          if (angle === 90) {
+            const scaleX = visibleHeight / canvasWidth;
+            const scaleY = visibleWidth / canvasHeight;
+            fieldX = boxX + (f.y * scaleY);
+            fieldY = boxY + (f.x * scaleX);
+            fieldWidth = f.height * scaleY;
+            fieldHeight = f.width * scaleX;
+          } else if (angle === 180) {
+            const scaleX = visibleWidth / canvasWidth;
+            const scaleY = visibleHeight / canvasHeight;
+            fieldX = boxX + (visibleWidth - (f.x + f.width) * scaleX);
+            fieldY = boxY + (f.y * scaleY);
+            fieldWidth = f.width * scaleX;
+            fieldHeight = f.height * scaleY;
+          } else if (angle === 270) {
+            const scaleX = visibleHeight / canvasWidth;
+            const scaleY = visibleWidth / canvasHeight;
+            fieldX = boxX + (visibleWidth - (f.y + f.height) * scaleY);
+            fieldY = boxY + (visibleHeight - (f.x + f.width) * scaleX);
+            fieldWidth = f.height * scaleY;
+            fieldHeight = f.width * scaleX;
+          } else {
+            const scaleX = visibleWidth / canvasWidth;
+            const scaleY = visibleHeight / canvasHeight;
+            fieldX = boxX + (f.x * scaleX);
+            fieldY = boxY + (visibleHeight - (f.y + f.height) * scaleY);
+            fieldWidth = f.width * scaleX;
+            fieldHeight = f.height * scaleY;
+          }
+
+          if (f.type === 'signature') {
+            const signatureFields: any = {
+              Type: 'Annot',
+              Subtype: 'Widget',
+              FT: 'Sig',
+              Rect: [fieldX, fieldY, fieldX + fieldWidth, fieldY + fieldHeight],
+              T: pdfLib.PDFString.of(f.name),
+              F: 4,
+              P: page.ref,
+            };
+            if (angle !== 0) {
+              signatureFields.MK = pdfDoc.context.obj({ R: angle });
+            }
+            const signatureDict = pdfDoc.context.obj(signatureFields);
+            const signatureRef = pdfDoc.context.register(signatureDict);
+            page.node.addAnnot(signatureRef);
+            form.acroForm.addField(signatureRef);
+          } else if (f.type === 'text') {
+            try {
+              const textField = form.createTextField(f.id);
+              textField.setText(f.textValue || '');
+              textField.addToPage(page, { x: fieldX, y: fieldY, width: fieldWidth, height: fieldHeight });
+              if (f.fontSize) textField.setFontSize(f.fontSize);
+            } catch (e) {}
+          }
+        }
+      }
+
+      // Highlights & Whiteouts
+      for (let pIdx = 0; pIdx < pdfPages.length; pIdx++) {
+        const page = pdfPages[pIdx];
+        const { width, height } = page.getSize();
+        let boxX = 0, boxY = 0, visibleWidth = width, visibleHeight = height;
+        try {
+          const cropBox = page.getCropBox();
+          if (cropBox) {
+            boxX = cropBox.x || 0;
+            boxY = cropBox.y || 0;
+            visibleWidth = cropBox.width;
+            visibleHeight = cropBox.height;
+          }
+        } catch (e) {}
+        let angle = 0;
+        try {
+          const rotVal = page.getRotation();
+          if (rotVal && typeof rotVal.angle === 'number') angle = rotVal.angle;
+          else if (typeof rotVal === 'number') angle = rotVal;
+        } catch (e) {}
+        angle = (angle % 360 + 360) % 360;
+
+        const parsedPage = pages[pIdx];
+        if (!parsedPage) continue;
+        const canvasWidth = parsedPage.width;
+        const canvasHeight = parsedPage.height;
+
+        const effectiveViewBox: [number, number, number, number] = parsedPage.viewBox || [
+          boxX,
+          boxY,
+          boxX + visibleWidth,
+          boxY + visibleHeight,
+        ];
+        const effectiveAngle = typeof parsedPage.pageRotation === 'number' ? parsedPage.pageRotation : angle;
+
+        const { m, width: effW, height: effH, rot } = getPageTransformMatrix(
+          effectiveViewBox,
+          effectiveAngle
+        );
+        const scaleX = effW / canvasWidth;
+        const scaleY = effH / canvasHeight;
+
+        const curAnnots = page.node.lookup(pdfLib.PDFName.of('Annots'));
+        if (curAnnots && typeof (curAnnots as any).size === 'function') {
+          const remaining: any[] = [];
+          for (let aIdx = 0; aIdx < (curAnnots as any).size(); aIdx++) {
+            const annotRef = (curAnnots as any).get(aIdx);
+            const annot = (curAnnots as any).lookup(aIdx);
+            const subtype = annot?.lookup(pdfLib.PDFName.of('Subtype'))?.toString();
+            if (subtype !== '/Highlight') remaining.push(annotRef);
+          }
+          page.node.set(pdfLib.PDFName.of('Annots'), pdfDoc.context.obj(remaining));
+        }
+
+        const pageHighlights = highlights.filter(h => h.pageIndex === pIdx);
+        for (const h of pageHighlights) {
+          const bl = screenToPdfPoint(h.x * scaleX, (h.y + h.height) * scaleY, m);
+          const pdfHlW = h.width * scaleX;
+          const pdfHlH = h.height * scaleY;
+
+          if (h.isWhiteout) {
+            page.drawRectangle({
+              x: bl.x,
+              y: bl.y,
+              width: pdfHlW,
+              height: pdfHlH,
+              color: pdfLib.rgb(1, 1, 1),
+              rotate: pdfLib.degrees(rot),
+            });
+          } else {
+            const rgb = hexToRgb(h.color || '#fde047');
+            const tl = screenToPdfPoint(h.x * scaleX, h.y * scaleY, m);
+            const tr = screenToPdfPoint((h.x + h.width) * scaleX, h.y * scaleY, m);
+            const blPt = screenToPdfPoint(h.x * scaleX, (h.y + h.height) * scaleY, m);
+            const brPt = screenToPdfPoint((h.x + h.width) * scaleX, (h.y + h.height) * scaleY, m);
+            const minX = Math.min(tl.x, tr.x, blPt.x, brPt.x);
+            const maxX = Math.max(tl.x, tr.x, blPt.x, brPt.x);
+            const minY = Math.min(tl.y, tr.y, blPt.y, brPt.y);
+            const maxY = Math.max(tl.y, tr.y, blPt.y, brPt.y);
+
+            const annotDict = pdfDoc.context.obj({
+              Type: 'Annot',
+              Subtype: 'Highlight',
+              Rect: [minX, minY, maxX, maxY],
+              C: [rgb.red, rgb.green, rgb.blue],
+              CA: h.opacity || 0.45,
+              QuadPoints: [
+                tl.x, tl.y,
+                tr.x, tr.y,
+                blPt.x, blPt.y,
+                brPt.x, brPt.y,
+              ],
+              F: 4,
+            });
+            const annotRef = pdfDoc.context.register(annotDict);
+            let currentAnnots = page.node.lookup(pdfLib.PDFName.of('Annots'));
+            if (!currentAnnots || typeof (currentAnnots as any).push !== 'function') {
+              const newAnnots = pdfDoc.context.obj([]);
+              page.node.set(pdfLib.PDFName.of('Annots'), newAnnots);
+              currentAnnots = newAnnots;
+            }
+            (currentAnnots as any).push(annotRef);
+          }
+        }
+      }
+
+      // TextBoxes
+      const allTextBoxesToProcess = [
+        ...deletedTextBoxes.map(dtb => ({ ...dtb, _isDeleted: true })),
+        ...textBoxes.map(tb => ({ ...tb, _isDeleted: false }))
+      ];
+      for (const tb of allTextBoxesToProcess) {
+        if (!tb._isDeleted && !tb.text.trim() && !tb.hasBackground && !tb.hasBorder) continue;
+        if (tb.pageIndex < pdfPages.length) {
+          const page = pdfPages[tb.pageIndex];
+          const { width, height } = page.getSize();
+          let boxX = 0, boxY = 0, visibleWidth = width, visibleHeight = height;
+          try {
+            const cropBox = page.getCropBox();
+            if (cropBox) {
+              boxX = cropBox.x || 0;
+              boxY = cropBox.y || 0;
+              visibleWidth = cropBox.width;
+              visibleHeight = cropBox.height;
+            }
+          } catch (e) {}
+
+          let angle = 0;
+          try {
+            const rotVal = page.getRotation();
+            if (rotVal && typeof rotVal.angle === 'number') angle = rotVal.angle;
+            else if (typeof rotVal === 'number') angle = rotVal;
+          } catch (e) {}
+          angle = (angle % 360 + 360) % 360;
+
+          const parsedPage = pages[tb.pageIndex];
+          if (!parsedPage) continue;
+          const canvasWidth = parsedPage.width;
+          const canvasHeight = parsedPage.height;
+
+          const effectiveViewBox: [number, number, number, number] = parsedPage.viewBox || [
+            boxX,
+            boxY,
+            boxX + visibleWidth,
+            boxY + visibleHeight,
+          ];
+          const effectiveAngle = typeof parsedPage.pageRotation === 'number' ? parsedPage.pageRotation : angle;
+
+          const { m, width: effW, height: effH, rot } = getPageTransformMatrix(
+            effectiveViewBox,
+            effectiveAngle
+          );
+          const scaleX = effW / canvasWidth;
+          const scaleY = effH / canvasHeight;
+          const pdfBoxW = tb.width * scaleX;
+          const pdfBoxH = tb.height * scaleY;
+
+          const selectTbFont = (ffName: string, bold?: boolean, italic?: boolean) => {
+            const cleanFam = getCleanFontDisplayName(ffName);
+            const isSans = cleanFam === 'Arial' || cleanFam === 'Roboto';
+            if (isSans) {
+              if (bold && italic) return embeddedSansBoldItalic;
+              if (italic) return embeddedSansItalic;
+              if (bold) return embeddedSansBold;
+              return embeddedSansRegular;
+            }
+            if (bold && italic) return embeddedSerifBoldItalic;
+            if (italic) return embeddedSerifItalic;
+            if (bold) return embeddedSerifBold;
+            return embeddedSerifRegular;
+          };
+
+          const spanLines = (!tb._isDeleted && tb.text.trim()) ? wrapTextBoxSpansToLines(tb) : [];
+          const activeTbSpans = getNormalizedTextBoxSpans(tb);
+          const maxSpanSizePt = Math.max(
+            tb.fontSize || 12,
+            ...activeTbSpans.map(s => s.fontSize || tb.fontSize || 12)
+          );
+          const lineHeightMult = tb.lineHeight || 1.25;
+          const actualBoxHeightScreen = Math.max(
+            tb.height,
+            spanLines.length * (maxSpanSizePt * 1.5) * lineHeightMult + 8
+          );
+          const effectivePdfBoxH = actualBoxHeightScreen * scaleY;
+
+          if (tb._isDeleted || tb.hasBackground || tb.hasBorder) {
+            const bl = screenToPdfPoint(tb.x * scaleX, (tb.y + actualBoxHeightScreen) * scaleY, m);
+            page.drawRectangle({
+              x: bl.x,
+              y: bl.y,
+              width: pdfBoxW,
+              height: effectivePdfBoxH,
+              color: (tb._isDeleted || tb.hasBackground) ? pdfLib.rgb(1, 1, 1) : undefined,
+              borderColor: (!tb._isDeleted && tb.hasBorder) ? hexToRgb(tb.color || '#000000') : undefined,
+              borderWidth: (!tb._isDeleted && tb.hasBorder) ? 1 : 0,
+              rotate: pdfLib.degrees(rot),
+            });
+          }
+
+          if (!tb._isDeleted && spanLines.length > 0) {
+            const baseFontSizeToUse = (maxSpanSizePt * 1.5) * ((scaleX + scaleY) / 2);
+            const lineHeight = baseFontSizeToUse * lineHeightMult;
+
+            for (let lIdx = 0; lIdx < spanLines.length; lIdx++) {
+              const lineSpans = spanLines[lIdx];
+              if (!lineSpans || lineSpans.length === 0) continue;
+              const lineScreenY = (tb.y + 4) * scaleY + (lineHeight - baseFontSizeToUse) * 0.5 + baseFontSizeToUse * 0.82 + lIdx * lineHeight;
+
+              let lineTotalW = 0;
+              for (const seg of lineSpans) {
+                const segFont = selectTbFont(seg.fontFamily || tb.fontFamily || 'Times New Roman', seg.isBold ?? tb.isBold, seg.isItalic ?? tb.isItalic);
+                const segSize = ((seg.fontSize || tb.fontSize || 12) * 1.5) * ((scaleX + scaleY) / 2);
+                let segW = seg.text.length * (segSize * 0.52);
+                try {
+                  segW = segFont.widthOfTextAtSize(seg.text, segSize);
+                } catch (e) {}
+                lineTotalW += segW;
+              }
+
+              let padXPt = 4 * scaleX;
+              if (tb.textAlign === 'center') padXPt = Math.max(4 * scaleX, (pdfBoxW - lineTotalW) / 2);
+              else if (tb.textAlign === 'right') padXPt = Math.max(4 * scaleX, pdfBoxW - lineTotalW - 4 * scaleX);
+
+              let curScreenX = tb.x * scaleX + padXPt;
+              for (const seg of lineSpans) {
+                if (!seg.text) continue;
+                const segFont = selectTbFont(seg.fontFamily || tb.fontFamily || 'Times New Roman', seg.isBold ?? tb.isBold, seg.isItalic ?? tb.isItalic);
+                const segSize = ((seg.fontSize || tb.fontSize || 12) * 1.5) * ((scaleX + scaleY) / 2);
+                const segColor = hexToRgb(seg.color || tb.color || '#000000');
+                const pdfSegPt = screenToPdfPoint(curScreenX, lineScreenY, m);
+                try {
+                  page.drawText(seg.text, {
+                    x: pdfSegPt.x,
+                    y: pdfSegPt.y,
+                    size: segSize,
+                    font: segFont,
+                    color: segColor,
+                    rotate: pdfLib.degrees(rot),
+                  });
+                } catch (e) {
+                  console.warn('Error drawing TextBox span on direct save:', e);
+                }
+                let segW = seg.text.length * (segSize * 0.52);
+                try {
+                  segW = segFont.widthOfTextAtSize(seg.text, segSize);
+                } catch (e) {}
+                curScreenX += segW;
+              }
+            }
+          }
+        }
+      }
+
+      // Shapes
+      for (let pIdx = 0; pIdx < pdfPages.length; pIdx++) {
+        const page = pdfPages[pIdx];
+        const { width, height } = page.getSize();
+        let boxX = 0, boxY = 0, visibleWidth = width, visibleHeight = height;
+        try {
+          const cropBox = page.getCropBox();
+          if (cropBox) {
+            boxX = cropBox.x || 0;
+            boxY = cropBox.y || 0;
+            visibleWidth = cropBox.width;
+            visibleHeight = cropBox.height;
+          }
+        } catch (e) {}
+        let angle = 0;
+        try {
+          const rotVal = page.getRotation();
+          if (rotVal && typeof rotVal.angle === 'number') angle = rotVal.angle;
+          else if (typeof rotVal === 'number') angle = rotVal;
+        } catch (e) {}
+        angle = (angle % 360 + 360) % 360;
+
+        const parsedPage = pages[pIdx];
+        if (!parsedPage) continue;
+        const canvasWidth = parsedPage.width;
+        const canvasHeight = parsedPage.height;
+
+        const effectiveViewBox: [number, number, number, number] = parsedPage.viewBox || [
+          boxX,
+          boxY,
+          boxX + visibleWidth,
+          boxY + visibleHeight,
+        ];
+        const effectiveAngle = typeof parsedPage.pageRotation === 'number' ? parsedPage.pageRotation : angle;
+
+        const { m, width: effW, height: effH } = getPageTransformMatrix(
+          effectiveViewBox,
+          effectiveAngle
+        );
+        const scaleX = effW / canvasWidth;
+        const scaleY = effH / canvasHeight;
+
+        const curAnnots = page.node.lookup(pdfLib.PDFName.of('Annots'));
+        if (curAnnots && typeof (curAnnots as any).size === 'function') {
+          const remaining: any[] = [];
+          for (let aIdx = 0; aIdx < (curAnnots as any).size(); aIdx++) {
+            const annotRef = (curAnnots as any).get(aIdx);
+            const annot = (curAnnots as any).lookup(aIdx);
+            const subtype = annot?.lookup(pdfLib.PDFName.of('Subtype'))?.toString();
+            if (subtype !== '/Square' && subtype !== '/Circle') remaining.push(annotRef);
+          }
+          page.node.set(pdfLib.PDFName.of('Annots'), pdfDoc.context.obj(remaining));
+        }
+
+        const pageShapes = shapes.filter(s => s.pageIndex === pIdx);
+        for (const sh of pageShapes) {
+          const strokeRgb = hexToRgb(sh.strokeColor || '#ef4444');
+          const shBorderWidth = Math.max(1, Math.round((sh.strokeWidth || 2) * ((scaleX + scaleY) / 2)));
+          const tl = screenToPdfPoint(sh.x * scaleX, sh.y * scaleY, m);
+          const tr = screenToPdfPoint((sh.x + sh.width) * scaleX, sh.y * scaleY, m);
+          const blPt = screenToPdfPoint(sh.x * scaleX, (sh.y + sh.height) * scaleY, m);
+          const brPt = screenToPdfPoint((sh.x + sh.width) * scaleX, (sh.y + sh.height) * scaleY, m);
+          const minX = Math.min(tl.x, tr.x, blPt.x, brPt.x);
+          const maxX = Math.max(tl.x, tr.x, blPt.x, brPt.x);
+          const minY = Math.min(tl.y, tr.y, blPt.y, brPt.y);
+          const maxY = Math.max(tl.y, tr.y, blPt.y, brPt.y);
+
+          const annotConfig: any = {
+            Type: 'Annot',
+            Subtype: sh.type === 'circle' ? 'Circle' : 'Square',
+            Rect: [minX, minY, maxX, maxY],
+            C: [strokeRgb.red, strokeRgb.green, strokeRgb.blue],
+            CA: 1.0,
+            BS: pdfDoc.context.obj({
+              Type: 'Border',
+              W: shBorderWidth,
+              S: sh.strokeStyle === 'dashed' ? 'D' : 'S',
+              ...(sh.strokeStyle === 'dashed' ? { D: [6, 4] } : {}),
+            }),
+            Border: [0, 0, shBorderWidth],
+            F: 4,
+            CustomMeta: pdfLib.PDFString.of(encodeURIComponent(JSON.stringify(sh))),
+          };
+
+          if (sh.fillColor === 'white') {
+            annotConfig.IC = [1, 1, 1];
+          } else if (sh.fillColor === 'light') {
+            annotConfig.IC = [
+              strokeRgb.red * 0.15 + 0.85,
+              strokeRgb.green * 0.15 + 0.85,
+              strokeRgb.blue * 0.15 + 0.85,
+            ];
+          }
+
+          const annotDict = pdfDoc.context.obj(annotConfig);
+          const annotRef = pdfDoc.context.register(annotDict);
+          let pageAnnotsArr = page.node.lookup(pdfLib.PDFName.of('Annots'));
+          if (!pageAnnotsArr || typeof (pageAnnotsArr as any).push !== 'function') {
+            const newAnnots = pdfDoc.context.obj([]);
+            page.node.set(pdfLib.PDFName.of('Annots'), newAnnots);
+            pageAnnotsArr = newAnnots;
+          }
+          (pageAnnotsArr as any).push(annotRef);
+        }
+
+        const pageImages = images.filter(img => img.pageIndex === pIdx);
+        for (const img of pageImages) {
+          try {
+            const embeddedPng = await pdfDoc.embedPng(img.dataUrl);
+            const { m: imgM, rot: imgRot } = getPageTransformMatrix(
+              effectiveViewBox,
+              effectiveAngle
+            );
+            const blImg = screenToPdfPoint(img.x * scaleX, (img.y + img.height) * scaleY, imgM);
+            page.drawImage(embeddedPng, {
+              x: blImg.x,
+              y: blImg.y,
+              width: img.width * scaleX,
+              height: img.height * scaleY,
+              rotate: pdfLib.degrees(imgRot),
+            });
+          } catch (imgErr) {
+            console.warn('Error embedding image in PDF:', imgErr);
+          }
+        }
+      }
+
+      try {
+        pdfDoc.setSubject(JSON.stringify({ v: 3, highlights, shapes }));
+      } catch (metaErr) {}
+
+      const pdfBytes = await pdfDoc.save();
+      setInitialFieldNames(fields.map(f => f.name));
+      setFields(fields.map(f => ({ ...f, originalName: f.name })));
+
+      const savedFileName = targetHandle?.name || suggestedName;
+      try {
+        localStorage.setItem(`pdf_highlights_${savedFileName}`, JSON.stringify(highlights));
+        localStorage.setItem(`pdf_highlights_${documentName}`, JSON.stringify(highlights));
+        localStorage.setItem(`pdf_shapes_${savedFileName}`, JSON.stringify(shapes));
+        localStorage.setItem(`pdf_shapes_${documentName}`, JSON.stringify(shapes));
+        localStorage.removeItem(`pdf_textboxes_${savedFileName}`);
+        localStorage.removeItem(`pdf_textboxes_${documentName}`);
+      } catch (e) {}
+
+      setEditingTextId(null);
+      setEditingTextBoxId(null);
+
+      // 3. Write directly to the FileSystemFileHandle on disk if available
+      if (targetHandle && typeof targetHandle.createWritable === 'function') {
+        try {
+          const writable = await targetHandle.createWritable();
+          await writable.write(pdfBytes);
+          await writable.close();
+          triggerSaveToast(`Đã lưu "${savedFileName}"`, 'Đã cập nhật trực tiếp lên tệp gốc trên máy.');
+          return;
+        } catch (writeErr: any) {
+          if (writeErr && writeErr.name === 'AbortError') {
+            return; // User clicked Cancel on browser "Save changes to ...pdf?" prompt
+          }
+          console.warn('Direct file write failed:', writeErr);
+        }
+      }
+
+      // 4. Nếu đang ở trong khung xem trước (iframe) nên trình duyệt chặn hộp chọn file gốc:
+      // Không tự ý tải xuống bản sao "(1).pdf" mà hiển thị hộp thoại kết nối trực tiếp tệp gốc hoặc mở Tab riêng
+      if (!forceSaveAs) {
+        setPendingDirectSaveBytes({ bytes: pdfBytes, filename: savedFileName });
+        triggerSaveToast(`Đã áp dụng thay đổi lên "${savedFileName}"`, 'Chọn tệp gốc hoặc mở Tab riêng để ghi đè lên ổ đĩa.');
+        return;
+      }
+
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = savedFileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      triggerSaveToast(`Đã lưu "${savedFileName}"`, 'Đã tải tệp PDF cập nhật về máy.');
+    } catch (err) {
+      console.error(err);
+      alert("Không thể lưu file PDF.");
     } finally {
       setIsProcessing(false);
     }
@@ -4090,6 +6366,68 @@ export default function App() {
             
             return { ...sh, x: newX, y: newY, width: newW, height: newH };
           }));
+        } else if (imageInteraction) {
+          const pageElement = document.getElementById(`page-${imageInteraction.pageIndex}`);
+          if (!pageElement) return;
+          const rect = pageElement.getBoundingClientRect();
+          const x = (e.clientX - rect.left) / zoom;
+          const y = (e.clientY - rect.top) / zoom;
+
+          const dx = x - imageInteraction.startX;
+          const dy = y - imageInteraction.startY;
+
+          const targetPage = pages[imageInteraction.pageIndex];
+          const pageWidth = targetPage ? targetPage.width : 800;
+          const pageHeight = targetPage ? targetPage.height : 1131;
+
+          setImages(prev => prev.map(img => {
+            if (img.id !== imageInteraction.id) return img;
+
+            let newX = imageInteraction.originalX;
+            let newY = imageInteraction.originalY;
+            let newW = imageInteraction.originalWidth;
+            let newH = imageInteraction.originalHeight;
+            const aspect = imageInteraction.aspectRatio || (imageInteraction.originalWidth / Math.max(1, imageInteraction.originalHeight));
+
+            if (imageInteraction.type === 'drag') {
+              newX += dx;
+              newY += dy;
+            } else if (
+              imageInteraction.type === 'nw' ||
+              imageInteraction.type === 'ne' ||
+              imageInteraction.type === 'se' ||
+              imageInteraction.type === 'sw'
+            ) {
+              // 4 góc: Phóng to / thu nhỏ đồng tỷ lệ (to/nhỏ)
+              const deltaW = imageInteraction.type.includes('e') ? dx : -dx;
+              newW = Math.max(24, Math.round(imageInteraction.originalWidth + deltaW));
+              newH = Math.max(24, Math.round(newW / aspect));
+              if (imageInteraction.type.includes('w')) {
+                newX = imageInteraction.originalX + (imageInteraction.originalWidth - newW);
+              }
+              if (imageInteraction.type.includes('n')) {
+                newY = imageInteraction.originalY + (imageInteraction.originalHeight - newH);
+              }
+            } else {
+              // 4 cạnh: Chỉnh kích thước dài / rộng độc lập
+              if (imageInteraction.type === 'e') {
+                newW = Math.max(20, Math.round(imageInteraction.originalWidth + dx));
+              } else if (imageInteraction.type === 'w') {
+                newW = Math.max(20, Math.round(imageInteraction.originalWidth - dx));
+                newX = imageInteraction.originalX + (imageInteraction.originalWidth - newW);
+              } else if (imageInteraction.type === 's') {
+                newH = Math.max(20, Math.round(imageInteraction.originalHeight + dy));
+              } else if (imageInteraction.type === 'n') {
+                newH = Math.max(20, Math.round(imageInteraction.originalHeight - dy));
+                newY = imageInteraction.originalY + (imageInteraction.originalHeight - newH);
+              }
+            }
+
+            newX = Math.max(0, Math.min(pageWidth - newW, newX));
+            newY = Math.max(0, Math.min(pageHeight - newH, newY));
+
+            return { ...img, x: newX, y: newY, width: newW, height: newH };
+          }));
         } else if (drawing) {
           const pageElement = document.getElementById(`page-${drawing.pageIndex}`);
           if (!pageElement) return;
@@ -4126,6 +6464,13 @@ export default function App() {
           ref={insertFileInputRef} 
           onChange={handleInsertPageBefore} 
           accept="application/pdf"
+          className="hidden" 
+      />
+      <input 
+          type="file" 
+          ref={imageInputRef} 
+          onChange={handleImageUpload} 
+          accept="image/*"
           className="hidden" 
       />
 
@@ -4189,35 +6534,53 @@ export default function App() {
       )}
 
       {showExportModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[150]">
-           <div className="bg-white p-6 rounded-lg shadow-2xl max-w-md w-full border border-gray-100 flex flex-col gap-4">
-              <div className="flex items-center gap-2 pb-2 border-b border-gray-100">
-                 <FileDown className="w-5 h-5 text-indigo-600" />
-                 <h3 className="text-base font-bold text-gray-800">Cấu hình xuất file PDF</h3>
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-2xs flex items-center justify-center z-[150]">
+           <div className="bg-white p-6 rounded-xl shadow-2xl max-w-md w-full border border-gray-100 flex flex-col gap-4">
+              <div className="flex items-center justify-between pb-2 border-b border-gray-100">
+                 <div className="flex items-center gap-2">
+                    <FolderOpen className="w-5 h-5 text-indigo-600" />
+                    <h3 className="text-base font-bold text-gray-800">Lưu thành file với tên khác</h3>
+                 </div>
+                 <button
+                    type="button"
+                    onClick={() => setShowExportModal(false)}
+                    className="text-gray-400 hover:text-gray-600 p-1 rounded cursor-pointer"
+                 >
+                    <X className="w-4 h-4" />
+                 </button>
               </div>
               
               <div className="flex flex-col gap-1.5">
-                 <label className="text-xs font-semibold text-gray-600">Tên file tải xuống:</label>
+                 <label className="text-xs font-semibold text-gray-600">Tên file PDF mới:</label>
                  <input 
                     type="text" 
                     value={exportFilename} 
                     onChange={(e) => setExportFilename(e.target.value)}
-                    className="text-sm border border-gray-300 rounded px-3 py-1.5 outline-none focus:ring-1 focus:ring-indigo-500 font-medium"
-                    placeholder="Nhập tên file"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        exportToPDF(exportFilename);
+                        setShowExportModal(false);
+                      }
+                    }}
+                    autoFocus
+                    className="text-sm border border-gray-300 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                    placeholder="Nhập tên file mới..."
                  />
               </div>
 
               <div className="flex flex-col gap-2">
-                 <span className="text-xs font-semibold text-gray-600">Mẫu đặt tên nhanh:</span>
+                 <span className="text-xs font-semibold text-gray-600">Gợi ý đặt tên nhanh:</span>
                  <div className="flex gap-2">
                     <button 
                        type="button"
                        onClick={() => {
-                         setExportFilename(documentName);
+                         const nameWithoutPdf = documentName.replace(/\.pdf$/i, '');
+                         setExportFilename(`${nameWithoutPdf}_da_sua.pdf`);
                        }}
-                       className="flex-1 text-[11px] font-bold py-1.5 px-2 border border-gray-300 hover:border-indigo-500 hover:text-indigo-600 text-gray-600 rounded bg-gray-50 hover:bg-indigo-50 transition-colors"
+                       className="flex-1 text-[11px] font-bold py-1.5 px-2 border border-gray-300 hover:border-indigo-500 hover:text-indigo-600 text-gray-600 rounded-lg bg-gray-50 hover:bg-indigo-50 transition-colors cursor-pointer"
                     >
-                       Giữ tên gốc
+                       + "_da_sua.pdf"
                     </button>
                     <button 
                        type="button"
@@ -4225,38 +6588,31 @@ export default function App() {
                          const nameWithoutPdf = documentName.replace(/\.pdf$/i, '');
                          setExportFilename(`${nameWithoutPdf}_co_vung_ky.pdf`);
                        }}
-                       className="flex-1 text-[11px] font-bold py-1.5 px-2 border border-gray-300 hover:border-indigo-500 hover:text-indigo-600 text-gray-600 rounded bg-gray-50 hover:bg-indigo-50 transition-colors"
+                       className="flex-1 text-[11px] font-bold py-1.5 px-2 border border-gray-300 hover:border-indigo-500 hover:text-indigo-600 text-gray-600 rounded-lg bg-gray-50 hover:bg-indigo-50 transition-colors cursor-pointer"
                     >
-                       Thêm hậu tố "_co_vung_ky"
+                       + "_co_vung_ky.pdf"
                     </button>
                  </div>
               </div>
 
-              <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-[11px] text-blue-800 leading-relaxed flex flex-col gap-1">
-                 <span className="font-bold text-[12px] flex items-center gap-1">💡 Hướng dẫn ghi đè lên file cũ:</span>
-                 <span>Để ghi đè và thay thế trực tiếp file cũ trên thiết bị của bạn:</span>
-                 <ol className="list-decimal list-inside pl-1 space-y-0.5 font-medium text-blue-900">
-                    <li>Chọn nút <b>"Giữ tên gốc"</b> ở phía trên.</li>
-                    <li>Bấm nút <b>"Tải xuống PDF"</b> ở phía dưới.</li>
-                    <li>Khi hộp thoại lưu của trình duyệt xuất hiện, chọn đúng thư mục chứa file cũ và bấm <b>Save (Lưu)</b> để ghi đè thành công.</li>
-                 </ol>
-              </div>
-
-              <div className="flex justify-end gap-3 pt-2 border-t border-gray-100">
+              <div className="flex justify-end gap-2.5 pt-2 border-t border-gray-100">
                  <button 
-                    className="px-4 py-1.5 bg-gray-100 text-gray-700 hover:bg-gray-200 font-semibold rounded text-xs transition-colors"
+                    type="button"
+                    className="px-4 py-2 bg-gray-100 text-gray-700 hover:bg-gray-200 font-semibold rounded-lg text-xs transition-colors cursor-pointer"
                     onClick={() => setShowExportModal(false)}
                  >
                     Hủy
                   </button>
                  <button 
-                    className="px-5 py-1.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white font-bold rounded text-xs shadow transition-all"
+                    type="button"
+                    className="px-5 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white font-bold rounded-lg text-xs shadow transition-all cursor-pointer flex items-center gap-1.5"
                     onClick={() => {
                       exportToPDF(exportFilename);
                       setShowExportModal(false);
                     }}
                  >
-                    Tải xuống PDF
+                    <Save className="w-3.5 h-3.5" />
+                    Lưu file mới
                  </button>
               </div>
            </div>
@@ -4565,19 +6921,169 @@ export default function App() {
         </div>
       )}
 
+      {/* Direct Save Local File Modal (khi trình duyệt trong khung xem trước cần cấp quyền tệp gốc) */}
+      {pendingDirectSaveBytes && (
+        <div className="fixed inset-0 bg-black/55 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl border border-gray-200 max-w-lg w-full overflow-hidden">
+            <div className="bg-gradient-to-r from-emerald-600 to-teal-700 px-6 py-4 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <Save className="w-5 h-5 text-emerald-100" />
+                <div>
+                  <h3 className="font-bold text-sm">Ghi đè trực tiếp lên tệp gốc trên máy</h3>
+                  <p className="text-[11px] text-emerald-100">{pendingDirectSaveBytes.filename}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingDirectSaveBytes(null)}
+                className="text-emerald-100 hover:text-white p-1 rounded-lg hover:bg-white/10 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 flex flex-col gap-4 text-xs text-gray-700">
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-emerald-900 leading-relaxed">
+                <span className="font-bold">✓ Nội dung sửa chữa đã được áp dụng trực tiếp vào trang PDF trên màn hình.</span>
+                <p className="mt-1 text-[11px] text-emerald-800">
+                  Do bạn đang mở trong khung xem trước (Preview), trình duyệt chặn hộp thoại chọn tệp trực tiếp. Để <b>ghi đè thẳng vào file gốc trên máy mà không sinh ra file (1).pdf</b>, hãy chọn 1 trong 2 cách dưới đây:
+                </p>
+              </div>
+
+              {/* Cách 1: Kéo thả file gốc vào ô để cấp quyền ghi đè trực tiếp */}
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsModalDropDragOver(true);
+                }}
+                onDragLeave={() => setIsModalDropDragOver(false)}
+                onDrop={async (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsModalDropDragOver(false);
+                  try {
+                    const firstItem = e.dataTransfer.items?.[0] as any;
+                    if (firstItem && typeof firstItem.getAsFileSystemHandle === 'function') {
+                      const handle = await firstItem.getAsFileSystemHandle();
+                      if (handle && handle.kind === 'file' && typeof handle.createWritable === 'function') {
+                        fileHandleRef.current = handle;
+                        setHasDirectFileHandle(true);
+                        if (handle.name) setDocumentName(handle.name);
+                        const writable = await handle.createWritable();
+                        await writable.write(pendingDirectSaveBytes.bytes);
+                        await writable.close();
+                        const targetName = handle.name || pendingDirectSaveBytes.filename;
+                        setPendingDirectSaveBytes(null);
+                        triggerSaveToast(`Đã lưu "${targetName}"`, 'Đã ghi đè trực tiếp lên tệp gốc trên máy.');
+                        return;
+                      }
+                    }
+                    alert('Trình duyệt của bạn không cấp quyền ghi từ thao tác kéo thả trong khung này. Vui lòng bấm nút "Mở trên Tab riêng" bên dưới để lưu trực tiếp.');
+                  } catch (err: any) {
+                    if (err && err.name === 'AbortError') return;
+                    alert('Không thể ghi đè trực tiếp trong khung xem trước. Hãy bấm "Mở trên Tab riêng" bên dưới.');
+                  }
+                }}
+                className={`border-2 border-dashed rounded-xl p-5 text-center transition-all cursor-pointer ${
+                  isModalDropDragOver
+                    ? 'border-emerald-500 bg-emerald-50/80 scale-[1.01]'
+                    : 'border-indigo-300 bg-indigo-50/40 hover:bg-indigo-50/70'
+                }`}
+              >
+                <FolderOpen className="w-7 h-7 text-indigo-600 mx-auto mb-1.5" />
+                <p className="font-bold text-gray-800 text-xs">
+                  Cách 1: Kéo thả tệp "{pendingDirectSaveBytes.filename}" từ máy tính vào ô này
+                </p>
+                <p className="text-[11px] text-gray-500 mt-0.5">
+                  Ứng dụng sẽ nhận quyền tệp gốc và ghi đè trực tiếp ngay lập tức (các lần bấm Save sau sẽ tự lưu thẳng)
+                </p>
+              </div>
+
+              {/* Cách 2: Mở trên Tab riêng (Chế độ Desktop) */}
+              <div className="flex flex-col gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const bytes = pendingDirectSaveBytes.bytes;
+                    setPendingDirectSaveBytes(null);
+                    handleOpenInStandaloneTab(bytes);
+                  }}
+                  className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-md flex items-center justify-center gap-2 transition-all cursor-pointer"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  <span>Cách 2: Mở trên Tab riêng (Hoạt động 100% như phần mềm trên máy)</span>
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const { bytes, filename } = pendingDirectSaveBytes;
+                    setPendingDirectSaveBytes(null);
+                    const blob = new Blob([bytes], { type: 'application/pdf' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    triggerSaveToast(`Đã tải xuống "${filename}"`, 'Đã tải tệp PDF về máy.');
+                  }}
+                  className="text-gray-500 hover:text-gray-800 font-medium underline cursor-pointer text-[11px]"
+                >
+                  Hoặc tải xuống bản cập nhật qua trình duyệt
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingDirectSaveBytes(null)}
+                  className="px-4 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-lg cursor-pointer"
+                >
+                  Đóng
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Top Header / Title Bar */}
-      <div className="bg-gradient-to-r from-indigo-700 via-purple-700 to-indigo-800 text-white shadow-md px-4 py-3 flex justify-between items-center z-10 relative">
-        <span className="text-[15px] font-bold tracking-wide flex items-center gap-2">
+      <div className="bg-gradient-to-r from-indigo-700 via-purple-700 to-indigo-800 text-white shadow-md px-4 py-2.5 flex justify-between items-center z-10 relative">
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <span className="text-[15px] font-bold tracking-wide flex items-center gap-2">
             <Layout className="w-5 h-5 text-indigo-100" />
             {documentName ? `${documentName} - ` : ''}Công cụ ký số PDF
-            <span className="text-xs font-normal text-indigo-200 ml-2">Tác giả: Tuấn Anh-KH-QNPC</span>
-        </span>
-        {isProcessing && (
-          <div className="flex items-center text-xs text-white bg-indigo-500 bg-opacity-40 px-3 py-1.5 rounded-full backdrop-blur-sm gap-2 shadow-inner border border-indigo-400">
-            <Loader2 className="w-4 h-4 animate-spin text-indigo-100" />
-            <span className="font-medium">Đang xử lý PDF...</span>
-          </div>
-        )}
+            <span className="text-xs font-normal text-indigo-200 ml-1">Tác giả: Tuấn Anh-KH-QNPC</span>
+          </span>
+          {hasDirectFileHandle && (
+            <span className="inline-flex items-center gap-1 bg-emerald-500/25 border border-emerald-300/40 text-emerald-100 text-[11px] px-2 py-0.5 rounded-full font-medium">
+              <CheckCircle2 className="w-3 h-3 text-emerald-300" />
+              Đã kết nối file gốc (Lưu trực tiếp)
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2.5">
+          {isInIframe && (
+            <button
+              type="button"
+              onClick={() => handleOpenInStandaloneTab()}
+              className="flex items-center gap-1.5 text-xs bg-white/15 hover:bg-white/25 text-white font-semibold px-3 py-1.5 rounded-lg border border-white/25 transition-all cursor-pointer shadow-xs"
+              title="Mở ứng dụng trên Tab trình duyệt riêng để đọc và ghi đè trực tiếp lên file PDF trên máy mà không tạo file (1).pdf"
+            >
+              <ExternalLink className="w-3.5 h-3.5 text-emerald-300" />
+              <span>Mở Tab riêng (Lưu trực tiếp file gốc)</span>
+            </button>
+          )}
+          {isProcessing && (
+            <div className="flex items-center text-xs text-white bg-indigo-500 bg-opacity-40 px-3 py-1.5 rounded-full backdrop-blur-sm gap-2 shadow-inner border border-indigo-400">
+              <Loader2 className="w-4 h-4 animate-spin text-indigo-100" />
+              <span className="font-medium">Đang xử lý PDF...</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {isDigitallySigned && (
@@ -4597,12 +7103,13 @@ export default function App() {
       )}
 
       {/* Ribbon */}
-      <div className="bg-gradient-to-b from-[#f8f9fa] to-[#f1f3f5] border-b border-gray-300 px-3 py-2 pb-3 flex flex-wrap items-start gap-x-2.5 gap-y-3 z-0 shadow-sm min-h-[86px]">
+      <div className="bg-gradient-to-b from-[#f8f9fa] to-[#f1f3f5] border-b border-gray-300 px-3 py-2 pb-3 flex flex-wrap items-start gap-x-2.5 gap-y-3 z-40 relative shadow-sm min-h-[86px]">
         {/* File Group */}
         <div className="flex items-start space-x-0.5 relative group/file">
            <button 
-             onClick={() => fileInputRef.current?.click()}
-             className="flex flex-col items-center justify-start w-[58px] h-[64px] rounded-lg border border-transparent hover:bg-white hover:border-indigo-200 hover:shadow-sm p-1 pt-1.5 gap-1 transition-all relative overflow-hidden group"
+             onClick={handleOpenPdfClick}
+             className="flex flex-col items-center justify-start w-[58px] h-[64px] rounded-lg border border-transparent hover:bg-white hover:border-indigo-200 hover:shadow-sm p-1 pt-1.5 gap-1 transition-all relative overflow-hidden group cursor-pointer"
+             title="Mở tệp PDF từ máy tính (hỗ trợ lưu trực tiếp lên tệp gốc)"
            >
              <div className="absolute inset-0 bg-indigo-50 opacity-0 group-hover:opacity-100 transition-opacity"></div>
              <FileUp className="w-5 h-5 text-indigo-600 z-10 drop-shadow-sm" strokeWidth={1.5} />
@@ -4743,6 +7250,20 @@ export default function App() {
                 setSelectedHighlightId(null);
                 setSelectedTextBoxId(null);
                 setSelectedShapeId(null);
+                setSelectedImageId(null);
+              }}
+           />
+           <RibbonButton 
+              icon={ImageIcon} 
+              label={"Chèn ảnh\nvào PDF"} 
+              active={Boolean(selectedImageId)} 
+              disabled={isDigitallySigned}
+              onClick={() => {
+                if (isDigitallySigned) {
+                  alert("Tài liệu hiện tại đã được ký số. Không thể chèn ảnh.");
+                  return;
+                }
+                imageInputRef.current?.click();
               }}
            />
            <div className="absolute -bottom-2 inset-x-0 text-center text-[9px] text-gray-500 uppercase tracking-wider pointer-events-none">Công cụ</div>
@@ -4773,12 +7294,44 @@ export default function App() {
         
         {activeTool === 'Edit Text' && (() => {
            const currentSelectedText = pdfTexts.find(t => t.id === selectedTextId);
+           const activeSel =
+             currentSelectedText &&
+             editSelectionRange &&
+             editSelectionRange.id === currentSelectedText.id &&
+             editSelectionRange.end > editSelectionRange.start
+               ? editSelectionRange
+               : null;
+
+           let activeSpanStyle: Partial<TextSpan> | null = null;
+           if (currentSelectedText && activeSel) {
+             const spans = getNormalizedSpans(currentSelectedText);
+             let p = 0;
+             for (const s of spans) {
+               if (activeSel.start >= p && activeSel.start < p + s.text.length) {
+                 activeSpanStyle = s;
+                 break;
+               }
+               p += s.text.length;
+             }
+           }
+
+           const displayFontFamily = activeSpanStyle?.fontFamily || currentSelectedText?.customFontFamily || 'Times New Roman';
+           const displayFontSize = Math.round(((activeSpanStyle?.fontSize || currentSelectedText?.customFontSize || currentSelectedText?.fontSize || 13)) * 10) / 10;
+           const displayBold = activeSpanStyle?.isBold !== undefined ? !!activeSpanStyle.isBold : !!currentSelectedText?.isBold;
+           const displayItalic = activeSpanStyle?.isItalic !== undefined ? !!activeSpanStyle.isItalic : !!currentSelectedText?.isItalic;
+           const displayColor = activeSpanStyle?.color || currentSelectedText?.customColor || '#000000';
+
+           const QUICK_TEXT_COLORS = ['#000000', '#ef4444', '#2563eb', '#16a34a', '#d97706', '#9333ea'];
+
            return (
              <>
                <div className="w-px h-15 bg-gray-300 self-center hidden xl:block"></div>
 
                {/* Formatting Ribbon Group */}
-               <div className="flex flex-wrap items-center gap-2 bg-white/95 border border-indigo-200 rounded-xl px-2.5 py-1.5 min-h-[64px] shadow-xs relative">
+               <div
+                 id="edit-text-ribbon-bar"
+                 className="flex flex-wrap items-center gap-2 bg-white/95 border border-indigo-200 rounded-xl px-2.5 py-1.5 min-h-[64px] shadow-xs relative"
+               >
                  {/* Font family selector */}
                  <div className="flex flex-col gap-0.5">
                    <div className="flex items-center justify-between">
@@ -4790,7 +7343,7 @@ export default function App() {
                      )}
                    </div>
                    <select 
-                     value={currentSelectedText?.customFontFamily || 'Times New Roman'}
+                     value={displayFontFamily}
                      disabled={!selectedTextId}
                      onChange={(e) => {
                        if (selectedTextId) {
@@ -4798,7 +7351,7 @@ export default function App() {
                        }
                      }}
                      className="text-xs font-semibold bg-white border border-gray-300 rounded px-2 py-1 outline-none focus:ring-1 focus:ring-indigo-500 shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed max-w-[155px]"
-                     style={{ fontFamily: getFontFamily(currentSelectedText?.customFontFamily || 'Times New Roman') }}
+                     style={{ fontFamily: getFontFamily(displayFontFamily) }}
                    >
                      <option value="Times New Roman">Times New Roman (Chuẩn VN)</option>
                      <option value="Arial">Arial (Không chân)</option>
@@ -4816,7 +7369,7 @@ export default function App() {
                        min={4}
                        max={120}
                        step={0.5}
-                       value={Math.round((currentSelectedText?.customFontSize || currentSelectedText?.fontSize || 13) * 10) / 10}
+                       value={displayFontSize}
                        onChange={(e) => {
                          const val = parseFloat(e.target.value);
                          if (selectedTextId && !isNaN(val) && val > 0) {
@@ -4831,10 +7384,10 @@ export default function App() {
                          type="button"
                          title="Tăng cỡ chữ (+1pt)"
                          disabled={!selectedTextId}
+                         onMouseDown={(e) => e.preventDefault()}
                          onClick={() => {
                            if (selectedTextId && currentSelectedText) {
-                             const cur = currentSelectedText.customFontSize || currentSelectedText.fontSize || 13;
-                             handleTextPropChange(selectedTextId, { customFontSize: cur + 1, isModified: true });
+                             handleTextPropChange(selectedTextId, { customFontSize: displayFontSize + 1, isModified: true });
                            }
                          }}
                          className="w-5 h-3.5 flex items-center justify-center bg-white hover:bg-indigo-100 border border-gray-300 rounded text-[9px] font-bold text-gray-700 disabled:opacity-40 cursor-pointer"
@@ -4845,10 +7398,10 @@ export default function App() {
                          type="button"
                          title="Giảm cỡ chữ (-1pt)"
                          disabled={!selectedTextId}
+                         onMouseDown={(e) => e.preventDefault()}
                          onClick={() => {
                            if (selectedTextId && currentSelectedText) {
-                             const cur = currentSelectedText.customFontSize || currentSelectedText.fontSize || 13;
-                             handleTextPropChange(selectedTextId, { customFontSize: Math.max(4, cur - 1), isModified: true });
+                             handleTextPropChange(selectedTextId, { customFontSize: Math.max(4, displayFontSize - 1), isModified: true });
                            }
                          }}
                          className="w-5 h-3.5 flex items-center justify-center bg-white hover:bg-indigo-100 border border-gray-300 rounded text-[9px] font-bold text-gray-700 disabled:opacity-40 cursor-pointer"
@@ -4863,19 +7416,20 @@ export default function App() {
 
                  {/* Bold, Italic & Color */}
                  <div className="flex flex-col gap-0.5">
-                   <span className="text-[9px] font-bold text-indigo-950 uppercase tracking-wider">Định dạng</span>
+                   <span className="text-[9px] font-bold text-indigo-950 uppercase tracking-wider">Định dạng & Màu</span>
                    <div className="flex items-center gap-1">
                      <button 
                        type="button"
-                       title="In đậm (Bold)"
+                       title="In đậm (Bold) - Bôi đen từ để in đậm riêng từng từ"
                        disabled={!selectedTextId}
+                       onMouseDown={(e) => e.preventDefault()}
                        onClick={() => {
                          if (selectedTextId && currentSelectedText) {
-                           handleTextPropChange(selectedTextId, { isBold: !currentSelectedText.isBold, isModified: true });
+                           handleTextPropChange(selectedTextId, { isBold: !displayBold, isModified: true });
                          }
                        }}
                        className={`w-7 h-7 flex items-center justify-center rounded border transition-all text-xs font-serif font-black cursor-pointer ${
-                         currentSelectedText?.isBold 
+                         displayBold 
                            ? 'bg-indigo-600 text-white border-indigo-700 shadow-sm font-bold' 
                            : 'bg-white hover:bg-gray-100 text-gray-800 border-gray-300'
                        } disabled:opacity-40 disabled:cursor-not-allowed`}
@@ -4884,15 +7438,16 @@ export default function App() {
                      </button>
                      <button 
                        type="button"
-                       title="In nghiêng (Italic)"
+                       title="In nghiêng (Italic) - Bôi đen từ để in nghiêng riêng từng từ"
                        disabled={!selectedTextId}
+                       onMouseDown={(e) => e.preventDefault()}
                        onClick={() => {
                          if (selectedTextId && currentSelectedText) {
-                           handleTextPropChange(selectedTextId, { isItalic: !currentSelectedText.isItalic, isModified: true });
+                           handleTextPropChange(selectedTextId, { isItalic: !displayItalic, isModified: true });
                          }
                        }}
                        className={`w-7 h-7 flex items-center justify-center rounded border transition-all text-xs font-serif italic font-bold cursor-pointer ${
-                         currentSelectedText?.isItalic 
+                         displayItalic 
                            ? 'bg-indigo-600 text-white border-indigo-700 shadow-sm font-bold' 
                            : 'bg-white hover:bg-gray-100 text-gray-800 border-gray-300'
                        } disabled:opacity-40 disabled:cursor-not-allowed`}
@@ -4900,17 +7455,41 @@ export default function App() {
                        I
                      </button>
 
+                     {/* Quick color swatches */}
+                     <div className="flex items-center gap-1 px-1">
+                       {QUICK_TEXT_COLORS.map(c => (
+                         <button
+                           key={c}
+                           type="button"
+                           disabled={!selectedTextId}
+                           onMouseDown={(e) => e.preventDefault()}
+                           onClick={() => {
+                             if (selectedTextId) {
+                               handleTextPropChange(selectedTextId, { customColor: c, isModified: true });
+                             }
+                           }}
+                           className={`w-4 h-4 rounded-full border transition-transform cursor-pointer disabled:opacity-40 ${
+                             displayColor.toLowerCase() === c.toLowerCase()
+                               ? 'scale-120 border-indigo-600 ring-2 ring-indigo-300'
+                               : 'border-gray-300 hover:scale-110'
+                           }`}
+                           style={{ backgroundColor: c }}
+                           title={`Màu chữ ${c}`}
+                         />
+                       ))}
+                     </div>
+
                      {/* Color picker */}
                      <label 
                        className={`w-7 h-7 rounded border border-gray-300 flex flex-col items-center justify-center cursor-pointer bg-white overflow-hidden shadow-xs hover:border-indigo-400 ${!selectedTextId ? 'opacity-40 cursor-not-allowed' : ''}`}
-                       title="Màu chữ"
+                       title="Chọn màu tùy chỉnh"
                      >
-                       <span className="text-[11px] font-black leading-none" style={{ color: currentSelectedText?.customColor || '#000000' }}>A</span>
-                       <span className="w-4 h-1 mt-0.5 rounded-full" style={{ backgroundColor: currentSelectedText?.customColor || '#000000' }}></span>
+                       <span className="text-[11px] font-black leading-none" style={{ color: displayColor }}>A</span>
+                       <span className="w-4 h-1 mt-0.5 rounded-full" style={{ backgroundColor: displayColor }}></span>
                        <input 
                          type="color"
                          disabled={!selectedTextId}
-                         value={currentSelectedText?.customColor || '#000000'}
+                         value={displayColor}
                          onChange={(e) => {
                            if (selectedTextId) {
                              handleTextPropChange(selectedTextId, { customColor: e.target.value, isModified: true });
@@ -4924,9 +7503,9 @@ export default function App() {
 
                  <div className="w-px h-10 bg-indigo-200/80"></div>
 
-                 {/* Options & Status */}
-                 <div className="flex flex-col justify-between h-full py-0.5">
-                   <div className="flex items-center gap-3">
+                 {/* Options & Per-word Action */}
+                 <div className="flex flex-col justify-between h-full py-0.5 gap-1">
+                   <div className="flex items-center gap-2.5">
                      <label className="flex items-center gap-1 cursor-pointer select-none text-[11px] font-semibold text-gray-700">
                        <input 
                          type="checkbox" 
@@ -4954,13 +7533,17 @@ export default function App() {
                    </div>
 
                    <div className="flex items-center gap-2">
-                     {currentSelectedText ? (
-                       <span className="text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded font-mono font-medium truncate max-w-[170px]" title={`Đã nhận diện từ PDF: ${currentSelectedText.fontName || currentSelectedText.customFontFamily} ${Math.round(currentSelectedText.fontSize)}pt`}>
-                         🔍 {currentSelectedText.customFontFamily || 'Times New Roman'} {Math.round(currentSelectedText.customFontSize || currentSelectedText.fontSize)}pt
+                     {activeSel && currentSelectedText ? (
+                       <span className="text-[10px] bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 rounded font-semibold truncate max-w-[200px]">
+                         Đang chọn từ: "{currentSelectedText.text.slice(activeSel.start, activeSel.end)}"
+                       </span>
+                     ) : currentSelectedText ? (
+                       <span className="text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded font-mono font-medium truncate max-w-[200px]">
+                         {displayFontFamily} {displayFontSize}pt (Bôi đen từ để chỉnh riêng)
                        </span>
                      ) : (
                        <span className="text-[10px] text-indigo-600/80 italic font-medium flex items-center gap-1">
-                         <Sparkles className="w-3 h-3 text-indigo-500" /> Nhấp vào chữ trên trang để sửa đúng phông
+                         <Sparkles className="w-3 h-3 text-indigo-500" /> Nhấp vào chữ (hoặc bôi đen từng từ) để chỉnh
                        </span>
                      )}
 
@@ -5188,21 +7771,55 @@ export default function App() {
 
         {(activeTool === 'Text Box' || selectedTextBoxId !== null) && (() => {
           const selectedTb = textBoxes.find(t => t.id === selectedTextBoxId);
-          const currentFont = selectedTb?.fontFamily || tbFontFamily;
-          const currentSize = selectedTb?.fontSize || tbFontSize;
-          const currentBold = selectedTb !== undefined ? !!selectedTb.isBold : tbIsBold;
-          const currentItalic = selectedTb !== undefined ? !!selectedTb.isItalic : tbIsItalic;
-          const currentColor = selectedTb?.color || tbColor;
+          const activeTbSel =
+            selectedTb &&
+            tbSelectionRange &&
+            tbSelectionRange.id === selectedTb.id &&
+            tbSelectionRange.end > tbSelectionRange.start
+              ? tbSelectionRange
+              : null;
+
+          let activeTbSpanStyle: Partial<TextSpan> | null = null;
+          if (selectedTb && activeTbSel) {
+            const spans = getNormalizedTextBoxSpans(selectedTb);
+            let p = 0;
+            for (const s of spans) {
+              if (activeTbSel.start >= p && activeTbSel.start < p + s.text.length) {
+                activeTbSpanStyle = s;
+                break;
+              }
+              p += s.text.length;
+            }
+          }
+
+          const currentFont = activeTbSpanStyle?.fontFamily || selectedTb?.fontFamily || tbFontFamily;
+          const currentSize = Math.round(((activeTbSpanStyle?.fontSize || selectedTb?.fontSize || tbFontSize)) * 10) / 10;
+          const currentLineHeight = selectedTb?.lineHeight || tbLineHeight || 1.25;
+          const currentBold = activeTbSpanStyle?.isBold !== undefined
+            ? !!activeTbSpanStyle.isBold
+            : selectedTb !== undefined
+            ? !!selectedTb.isBold
+            : tbIsBold;
+          const currentItalic = activeTbSpanStyle?.isItalic !== undefined
+            ? !!activeTbSpanStyle.isItalic
+            : selectedTb !== undefined
+            ? !!selectedTb.isItalic
+            : tbIsItalic;
+          const currentColor = activeTbSpanStyle?.color || selectedTb?.color || tbColor;
           const currentAlign = selectedTb?.textAlign || tbTextAlign;
           const currentHasBg = selectedTb !== undefined ? !!selectedTb.hasBackground : tbHasBackground;
           const currentHasBorder = selectedTb !== undefined ? !!selectedTb.hasBorder : tbHasBorder;
+          const QUICK_TB_COLORS = ['#000000', '#ef4444', '#2563eb', '#16a34a', '#d97706', '#9333ea'];
 
           return (
             <>
               <div className="w-px h-15 bg-gray-300 self-center hidden xl:block"></div>
 
               {/* Text Box Formatting Ribbon Group */}
-              <div className="flex flex-wrap items-center gap-2 bg-white/95 border border-blue-300 rounded-xl px-2.5 py-1.5 min-h-[64px] shadow-xs relative">
+              <div
+                id="textbox-ribbon-bar"
+                className="flex flex-wrap items-center gap-2 bg-white/95 border border-blue-300 rounded-xl px-2.5 py-1.5 min-h-[64px] shadow-xs relative"
+              >
                 {/* 1. Font Family */}
                 <div className="flex flex-col gap-0.5">
                   <span className="text-[9px] font-bold text-blue-950 uppercase tracking-wider">Phông chữ</span>
@@ -5223,19 +7840,25 @@ export default function App() {
                 <div className="flex flex-col gap-0.5">
                   <span className="text-[9px] font-bold text-blue-950 uppercase tracking-wider">Cỡ chữ</span>
                   <div className="flex items-center gap-1">
-                    <select
+                    <input
+                      type="number"
+                      min={4}
+                      max={120}
+                      step={0.5}
                       value={currentSize}
-                      onChange={(e) => updateCurrentTextBox({ fontSize: Number(e.target.value) })}
-                      className="text-xs font-semibold bg-white border border-gray-300 rounded px-1.5 py-1 outline-none focus:ring-1 focus:ring-blue-500 shadow-xs cursor-pointer w-14"
-                    >
-                      {[8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 36, 40, 48, 60, 72].map(sz => (
-                        <option key={sz} value={sz}>{sz} pt</option>
-                      ))}
-                    </select>
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (!isNaN(val) && val > 0) {
+                          updateCurrentTextBox({ fontSize: val });
+                        }
+                      }}
+                      className="w-13 text-xs font-bold text-center bg-white border border-gray-300 rounded py-1 outline-none focus:ring-1 focus:ring-blue-500 shadow-xs"
+                    />
                     <div className="flex flex-col gap-0.5">
                       <button
                         type="button"
                         title="Tăng cỡ chữ"
+                        onMouseDown={(e) => e.preventDefault()}
                         onClick={() => updateCurrentTextBox({ fontSize: Math.min(100, currentSize + 1) })}
                         className="w-5 h-3.5 flex items-center justify-center bg-white hover:bg-blue-100 border border-gray-300 rounded text-[9px] font-bold text-gray-700 cursor-pointer"
                       >
@@ -5244,7 +7867,8 @@ export default function App() {
                       <button
                         type="button"
                         title="Giảm cỡ chữ"
-                        onClick={() => updateCurrentTextBox({ fontSize: Math.max(6, currentSize - 1) })}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => updateCurrentTextBox({ fontSize: Math.max(4, currentSize - 1) })}
                         className="w-5 h-3.5 flex items-center justify-center bg-white hover:bg-blue-100 border border-gray-300 rounded text-[9px] font-bold text-gray-700 cursor-pointer"
                       >
                         ▼
@@ -5255,13 +7879,126 @@ export default function App() {
 
                 <div className="w-px h-10 bg-blue-200/80"></div>
 
+                {/* 2b. Độ rộng 2 dòng (Khoảng cách dòng khi xuống dòng) */}
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[9px] font-bold text-blue-950 uppercase tracking-wider">Độ rộng 2 dòng</span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min={0.8}
+                      max={3.5}
+                      step={0.05}
+                      value={Math.round(currentLineHeight * 100) / 100}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (!isNaN(val) && val >= 0.7 && val <= 4) {
+                          updateCurrentTextBox({ lineHeight: Math.round(val * 100) / 100 });
+                        }
+                      }}
+                      className="w-12 text-xs font-bold text-center bg-white border border-gray-300 rounded py-1 outline-none focus:ring-1 focus:ring-blue-500 shadow-xs"
+                      title="Khoảng cách giữa 2 dòng khi xuống dòng"
+                    />
+                    <div className="flex flex-col gap-0.5">
+                      <button
+                        type="button"
+                        title="Tăng độ rộng 2 dòng"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => updateCurrentTextBox({ lineHeight: Math.min(3.5, Math.round((currentLineHeight + 0.1) * 100) / 100) })}
+                        className="w-5 h-3.5 flex items-center justify-center bg-white hover:bg-blue-100 border border-gray-300 rounded text-[9px] font-bold text-gray-700 cursor-pointer"
+                      >
+                        ▲
+                      </button>
+                      <button
+                        type="button"
+                        title="Giảm độ rộng 2 dòng"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => updateCurrentTextBox({ lineHeight: Math.max(0.8, Math.round((currentLineHeight - 0.1) * 100) / 100) })}
+                        className="w-5 h-3.5 flex items-center justify-center bg-white hover:bg-blue-100 border border-gray-300 rounded text-[9px] font-bold text-gray-700 cursor-pointer"
+                      >
+                        ▼
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-0.5 bg-gray-100 p-0.5 rounded border border-gray-300">
+                      {[1.0, 1.25, 1.5, 2.0].map(lhVal => (
+                        <button
+                          key={lhVal}
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => updateCurrentTextBox({ lineHeight: lhVal })}
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-semibold cursor-pointer transition-colors ${
+                            Math.abs(currentLineHeight - lhVal) < 0.04
+                              ? 'bg-blue-600 text-white shadow-2xs'
+                              : 'text-gray-700 hover:bg-white'
+                          }`}
+                        >
+                          {lhVal}x
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {selectedTb && (
+                  <>
+                    <div className="w-px h-10 bg-blue-200/80"></div>
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-[9px] font-bold text-blue-950 uppercase tracking-wider">Độ rộng khung</span>
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min={20}
+                          max={2000}
+                          step={5}
+                          value={Math.round(selectedTb.width)}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value, 10);
+                            if (!isNaN(val) && val >= 20) {
+                              updateCurrentTextBox({ width: val });
+                            }
+                          }}
+                          className="w-14 text-xs font-bold text-center bg-white border border-gray-300 rounded py-1 outline-none focus:ring-1 focus:ring-blue-500 shadow-xs"
+                          title="Độ rộng ngang của ô chữ (px)"
+                        />
+                        <div className="flex flex-col gap-0.5">
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => updateCurrentTextBox({ width: Math.round(selectedTb.width + 10) })}
+                            className="w-5 h-3.5 flex items-center justify-center bg-white hover:bg-blue-100 border border-gray-300 rounded text-[9px] font-bold text-gray-700 cursor-pointer"
+                          >
+                            ▲
+                          </button>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => updateCurrentTextBox({ width: Math.max(30, Math.round(selectedTb.width - 10)) })}
+                            className="w-5 h-3.5 flex items-center justify-center bg-white hover:bg-blue-100 border border-gray-300 rounded text-[9px] font-bold text-gray-700 cursor-pointer"
+                          >
+                            ▼
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                <div className="w-px h-10 bg-blue-200/80"></div>
+
                 {/* 3. Bold, Italic, Alignment & Color */}
                 <div className="flex flex-col gap-0.5">
-                  <span className="text-[9px] font-bold text-blue-950 uppercase tracking-wider">Định dạng & Màu</span>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[9px] font-bold text-blue-950 uppercase tracking-wider">Định dạng & Màu</span>
+                    {activeTbSel && selectedTb && (
+                      <span className="text-[9px] bg-amber-100 text-amber-900 border border-amber-300 px-1.5 py-0.2 rounded font-bold truncate max-w-[130px]">
+                        Đoạn: "{selectedTb.text.slice(activeTbSel.start, activeTbSel.end)}"
+                      </span>
+                    )}
+                  </div>
                   <div className="flex items-center gap-1">
                     <button
                       type="button"
-                      title="In đậm (Bold)"
+                      title="In đậm (Bold) - Bôi đen từ/cụm từ để in đậm riêng"
+                      onMouseDown={(e) => e.preventDefault()}
                       onClick={() => updateCurrentTextBox({ isBold: !currentBold })}
                       className={`w-7 h-7 flex items-center justify-center rounded border transition-all text-xs font-serif font-black cursor-pointer ${
                         currentBold
@@ -5273,7 +8010,8 @@ export default function App() {
                     </button>
                     <button
                       type="button"
-                      title="In nghiêng (Italic)"
+                      title="In nghiêng (Italic) - Bôi đen từ/cụm từ để in nghiêng riêng"
+                      onMouseDown={(e) => e.preventDefault()}
                       onClick={() => updateCurrentTextBox({ isItalic: !currentItalic })}
                       className={`w-7 h-7 flex items-center justify-center rounded border transition-all text-xs font-serif italic font-bold cursor-pointer ${
                         currentItalic
@@ -5284,11 +8022,31 @@ export default function App() {
                       I
                     </button>
 
+                    {/* Quick color swatches */}
+                    <div className="flex items-center gap-1 px-1">
+                      {QUICK_TB_COLORS.map(c => (
+                        <button
+                          key={c}
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => updateCurrentTextBox({ color: c })}
+                          className={`w-4 h-4 rounded-full border transition-transform cursor-pointer ${
+                            currentColor.toLowerCase() === c.toLowerCase()
+                              ? 'scale-120 border-blue-600 ring-2 ring-blue-300'
+                              : 'border-gray-300 hover:scale-110'
+                          }`}
+                          style={{ backgroundColor: c }}
+                          title={`Màu chữ ${c}`}
+                        />
+                      ))}
+                    </div>
+
                     {/* Alignment */}
                     <div className="flex items-center bg-gray-100 rounded border border-gray-300 p-0.5">
                       <button
                         type="button"
                         title="Căn trái"
+                        onMouseDown={(e) => e.preventDefault()}
                         onClick={() => updateCurrentTextBox({ textAlign: 'left' })}
                         className={`p-1 rounded cursor-pointer ${currentAlign === 'left' ? 'bg-white text-blue-700 shadow-2xs font-bold' : 'text-gray-600 hover:text-gray-900'}`}
                       >
@@ -5297,6 +8055,7 @@ export default function App() {
                       <button
                         type="button"
                         title="Căn giữa"
+                        onMouseDown={(e) => e.preventDefault()}
                         onClick={() => updateCurrentTextBox({ textAlign: 'center' })}
                         className={`p-1 rounded cursor-pointer ${currentAlign === 'center' ? 'bg-white text-blue-700 shadow-2xs font-bold' : 'text-gray-600 hover:text-gray-900'}`}
                       >
@@ -5305,6 +8064,7 @@ export default function App() {
                       <button
                         type="button"
                         title="Căn phải"
+                        onMouseDown={(e) => e.preventDefault()}
                         onClick={() => updateCurrentTextBox({ textAlign: 'right' })}
                         className={`p-1 rounded cursor-pointer ${currentAlign === 'right' ? 'bg-white text-blue-700 shadow-2xs font-bold' : 'text-gray-600 hover:text-gray-900'}`}
                       >
@@ -5315,7 +8075,7 @@ export default function App() {
                     {/* Color Picker */}
                     <label
                       className="w-7 h-7 rounded border border-gray-300 flex flex-col items-center justify-center cursor-pointer bg-white overflow-hidden shadow-xs hover:border-blue-400"
-                      title="Màu chữ"
+                      title="Màu chữ tùy chỉnh"
                     >
                       <span className="text-[11px] font-black leading-none" style={{ color: currentColor }}>A</span>
                       <span className="w-4 h-1 mt-0.5 rounded-full" style={{ backgroundColor: currentColor }}></span>
@@ -5740,6 +8500,89 @@ export default function App() {
             </>
           );
         })()}
+
+        {selectedImageId && (() => {
+          const selectedImg = images.find(img => img.id === selectedImageId);
+          if (!selectedImg) return null;
+          return (
+            <>
+              <div className="w-px h-15 bg-gray-300 self-center"></div>
+              <div className="flex items-center gap-2.5 bg-indigo-50/90 px-3 py-1.5 rounded-xl border border-indigo-200 h-[64px] shrink-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] font-semibold text-gray-700">Rộng:</span>
+                  <input
+                    type="number"
+                    min={20}
+                    max={1200}
+                    value={Math.round(selectedImg.width)}
+                    onChange={(e) => {
+                      const val = Math.max(20, Math.min(1200, Number(e.target.value) || 20));
+                      setImages(prev => prev.map(item => item.id === selectedImg.id ? { ...item, width: val } : item));
+                    }}
+                    className="w-15 px-1.5 py-1 text-xs font-semibold border border-gray-300 rounded bg-white text-center outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] font-semibold text-gray-700">Dài/Cao:</span>
+                  <input
+                    type="number"
+                    min={20}
+                    max={1600}
+                    value={Math.round(selectedImg.height)}
+                    onChange={(e) => {
+                      const val = Math.max(20, Math.min(1600, Number(e.target.value) || 20));
+                      setImages(prev => prev.map(item => item.id === selectedImg.id ? { ...item, height: val } : item));
+                    }}
+                    className="w-15 px-1.5 py-1 text-xs font-semibold border border-gray-300 rounded bg-white text-center outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                </div>
+                <div className="w-px h-8 bg-indigo-200" />
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImages(prev => prev.map(item => {
+                        if (item.id !== selectedImg.id) return item;
+                        const newW = Math.max(24, Math.round(item.width * 0.9));
+                        const newH = Math.max(24, Math.round(item.height * 0.9));
+                        return { ...item, width: newW, height: newH };
+                      }));
+                    }}
+                    className="px-2 py-1 bg-white hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded text-xs font-bold cursor-pointer"
+                  >
+                    Thu nhỏ -
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImages(prev => prev.map(item => {
+                        if (item.id !== selectedImg.id) return item;
+                        const newW = Math.min(1200, Math.round(item.width * 1.1));
+                        const newH = Math.min(1600, Math.round(item.height * 1.1));
+                        return { ...item, width: newW, height: newH };
+                      }));
+                    }}
+                    className="px-2 py-1 bg-white hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded text-xs font-bold cursor-pointer"
+                  >
+                    Phóng to +
+                  </button>
+                </div>
+                <div className="w-px h-8 bg-indigo-200" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImages(prev => prev.filter(item => item.id !== selectedImg.id));
+                    setSelectedImageId(null);
+                  }}
+                  className="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                  <span>Xóa</span>
+                </button>
+              </div>
+            </>
+          );
+        })()}
         
         <div className="w-px h-15 bg-gray-300 self-center"></div>
 
@@ -5756,21 +8599,48 @@ export default function App() {
 
         <div className="w-px h-15 bg-gray-300 self-center"></div>
         
-        <div className="flex items-center h-[64px]">
-             <button 
+        <div className="flex items-center h-[64px] relative" ref={saveDropdownRef}>
+          <button
+            type="button"
+            onClick={() => setShowSaveDropdown(prev => !prev)}
+            className="flex items-center justify-center h-[56px] px-4 rounded-lg shadow-sm bg-emerald-600 hover:bg-emerald-700 text-white font-bold border border-emerald-700 transition-colors cursor-pointer gap-2"
+            title="Lưu tài liệu PDF"
+          >
+            <Save className="w-4 h-4" />
+            <span className="text-xs font-bold tracking-wide">Lưu</span>
+            <ChevronDown className="w-3.5 h-3.5 text-emerald-100" />
+          </button>
+
+          {showSaveDropdown && (
+            <div className="absolute left-0 top-[60px] w-44 bg-white rounded-lg shadow-xl border border-gray-200 py-1 z-[100] text-xs">
+              <button
+                type="button"
+                onClick={() => handleDirectSave(false)}
+                className="w-full px-3 py-2 text-left hover:bg-emerald-50 flex items-center gap-2 text-gray-800 font-semibold transition-colors cursor-pointer"
+              >
+                <Save className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span>Lưu trực tiếp</span>
+              </button>
+              <div className="border-t border-gray-100" />
+              <button
+                type="button"
                 onClick={() => {
+                  setShowSaveDropdown(false);
                   if (!originalPdfBuffer) {
-                    alert("Vui lòng nhập tài liệu PDF trước khi xuất.");
+                    alert("Vui lòng nhập tài liệu PDF trước khi lưu.");
                     return;
                   }
-                  setExportFilename(documentName);
+                  const baseName = documentName.replace(/\.pdf$/i, '');
+                  setExportFilename(`${baseName}_moi.pdf`);
                   setShowExportModal(true);
                 }}
-                className="flex flex-col items-center justify-center w-[76px] h-[64px] rounded-lg border border-blue-500 bg-blue-50 hover:bg-blue-100 p-1.5 gap-1 text-blue-700 font-bold transition-colors shadow-sm cursor-pointer"
+                className="w-full px-3 py-2 text-left hover:bg-indigo-50 flex items-center gap-2 text-gray-800 font-semibold transition-colors cursor-pointer"
               >
-                <FileDown className="w-5 h-5" />
-                <span className="text-[10px] leading-tight text-center">Xuất file PDF</span>
-             </button>
+                <FolderOpen className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                <span>Lưu 1 bản khác</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -5800,6 +8670,7 @@ export default function App() {
             onMovePages={handleMoveMultiplePages}
             onRotatePages={handleRotatePages}
             onAddPageClick={() => appendFileInputRef.current?.click()}
+            onDropPdfFiles={handleDropPdfFiles}
             onClose={() => setShowPageSidebar(false)}
             isDigitallySigned={isDigitallySigned}
           />
@@ -5834,7 +8705,7 @@ export default function App() {
           <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-blue-900/95 text-white px-4 py-2.5 rounded-full shadow-lg flex items-center gap-2.5 text-xs font-semibold backdrop-blur-md border border-blue-500/30 animate-bounce z-50">
             <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
             <Type className="w-4 h-4 text-blue-300" />
-            <span>Kéo chuột hoặc nhấp vào trang để chèn ô chữ (Nhấn <kbd className="bg-blue-700 px-1.5 py-0.5 rounded text-[10px] border border-blue-500 font-mono">ESC</kbd> hoặc nút <b>Chọn</b> để thoát)</span>
+            <span>Nhấn giữ và kéo chuột trên trang để tạo khung thêm chữ (Nhấn <kbd className="bg-blue-700 px-1.5 py-0.5 rounded text-[10px] border border-blue-500 font-mono">ESC</kbd> hoặc nút <b>Chọn</b> để thoát)</span>
           </div>
         )}
 
@@ -5848,25 +8719,42 @@ export default function App() {
           </div>
         )}
 
-        {/* Main Workspace Workspace */}
+        {/* Main Workspace */}
         <div 
           ref={workspaceRef}
-          className="flex-1 bg-[#8c8c8c] overflow-auto p-12 flex flex-col items-center gap-6 shadow-[inset_0_2px_4px_rgba(0,0,0,0.1)] relative" 
+          className={`flex-1 bg-[#8c8c8c] overflow-auto p-12 flex flex-col gap-6 shadow-[inset_0_2px_4px_rgba(0,0,0,0.1)] relative transition-colors ${
+            isWorkspaceDragOver ? 'ring-4 ring-inset ring-emerald-400 bg-[#7a8b82]' : ''
+          }`}
           onScroll={handleScroll}
+          onDragOver={(e) => {
+            if (Array.from(e.dataTransfer.types || []).includes('Files')) {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'copy';
+              if (!isWorkspaceDragOver) setIsWorkspaceDragOver(true);
+            }
+          }}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+              setIsWorkspaceDragOver(false);
+            }
+          }}
+          onDrop={handleWorkspaceFileDrop}
         >
         
         {pages.length === 0 ? (
           /* Placeholder Page */
           <div 
+             data-page-index={0}
              style={{
                width: 800 * zoom,
                height: 1131 * zoom,
                marginBottom: '28px'
              }}
-             className="relative flex-shrink-0"
+             className="relative flex-shrink-0 mx-auto"
           >
             <div 
-               className={`bg-white shadow-xl w-[800px] h-[1131px] relative origin-top-left transition-all flex-shrink-0 ${
+               id="page-0"
+               className={`bg-white shadow-xl w-[800px] h-[1131px] relative origin-top-left transition-shadow flex-shrink-0 ${
                  (activeTool === 'Signature Field' || activeTool === 'Highlight' || activeTool === 'Text Box') ? 'cursor-crosshair' : 'cursor-default'
                }`}
                style={{
@@ -5901,6 +8789,7 @@ export default function App() {
                 {renderHighlights(0)}
                 {renderTextBoxes(0)}
                 {renderShapes(0)}
+                {renderImages(0)}
                 {renderDrawingBox(0)}
             </div>
           </div>
@@ -5911,7 +8800,8 @@ export default function App() {
              return (
               <div 
                 key={i} 
-                className="flex flex-row items-stretch relative group flex-shrink-0"
+                data-page-index={i}
+                className="flex flex-row items-stretch relative group flex-shrink-0 mx-auto"
                 style={{
                   width: p.width * zoom,
                   height: p.height * zoom,
@@ -5967,9 +8857,9 @@ export default function App() {
 
                    <div 
                      id={`page-${i}`}
-                     className={`bg-white shadow-xl relative origin-top-left transition-all duration-150 flex-shrink-0 ${
+                     className={`bg-white shadow-xl relative origin-top-left transition-shadow duration-150 flex-shrink-0 ${
                        (activeTool === 'Signature Field' || activeTool === 'Highlight' || activeTool === 'Text Box' || activeTool === 'Rectangle' || activeTool === 'Circle') ? 'cursor-crosshair' : 'cursor-default'
-                     } ${isPageSelected ? 'ring-4 ring-indigo-500 ring-offset-2 scale-[1.005] z-20' : ''}`}
+                     } ${isPageSelected ? 'ring-4 ring-indigo-500 ring-offset-2 z-20' : ''}`}
                      style={{ 
                        width: p.width, 
                        height: p.height,
@@ -5983,6 +8873,7 @@ export default function App() {
                       {renderHighlights(i)}
                       {renderTextBoxes(i)}
                       {renderShapes(i)}
+                      {renderImages(i)}
                       {activeTool === 'Edit Text' && renderOriginalTexts(i)}
                       {renderModifiedTextsOverlay(i)}
                       {renderDrawingBox(i)}
@@ -6083,13 +8974,34 @@ export default function App() {
         {/* Floating Zoom Controls Bar at Bottom Right */}
         <ZoomControls
            zoom={zoom}
-           onZoomChange={setZoom}
+           onZoomChange={applyZoomWithCenterAnchor}
            onFitWidth={handleFitWidth}
            onFitPage={handleFitPage}
            onResetZoom={handleResetZoom}
            className="fixed bottom-6 z-30"
            style={{ right: '24px' }}
         />
+
+        {/* Direct Save Toast Notification (matching native desktop-like feedback) */}
+        {saveToast && (
+          <div className="fixed bottom-20 right-6 z-50 bg-[#182232] text-white px-4 py-3 rounded-xl shadow-2xl border border-slate-700/80 flex items-center gap-3.5 min-w-[290px] max-w-md animate-fade-in">
+            <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0">
+              <Save className="w-4 h-4 text-emerald-400" />
+            </div>
+            <div className="flex flex-col flex-1 min-w-0">
+              <span className="text-xs font-bold text-white truncate">{saveToast.title}</span>
+              <span className="text-[11px] text-slate-300 mt-0.5">{saveToast.subtitle}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSaveToast(null)}
+              className="text-slate-400 hover:text-white p-1 rounded transition-colors cursor-pointer"
+              aria-label="Đóng thông báo"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
         </div>
       </div>
@@ -6290,6 +9202,10 @@ export default function App() {
         const isEditing = tb.id === editingTextBoxId;
         const fontFamilyCss = getFontFamily(tb.fontFamily || 'Times New Roman');
 
+        const activeTbSpans = getNormalizedTextBoxSpans(tb);
+        const hasMultipleTbSpans = activeTbSpans.length > 1;
+        const primaryTbSpan = activeTbSpans[0];
+
         return (
           <div
             key={tb.id}
@@ -6302,6 +9218,7 @@ export default function App() {
               setSelectedTextId(null);
               setTbFontFamily(tb.fontFamily || 'Times New Roman');
               setTbFontSize(tb.fontSize || 12);
+              setTbLineHeight(tb.lineHeight || 1.25);
               setTbIsBold(!!tb.isBold);
               setTbIsItalic(!!tb.isItalic);
               setTbColor(tb.color || '#000000');
@@ -6310,10 +9227,6 @@ export default function App() {
               setTbHasBorder(!!tb.hasBorder);
             }}
             onDoubleClick={(e) => {
-              if (isDigitallySigned) {
-                alert("Tài liệu hiện tại đã được ký số. Không thể chỉnh sửa ô chữ.");
-                return;
-              }
               e.stopPropagation();
               setSelectedTextBoxId(tb.id);
               setEditingTextBoxId(tb.id);
@@ -6327,8 +9240,8 @@ export default function App() {
               setSelectedTextId(null);
               handleTextBoxResizeDown(e, tb, 'drag');
             }}
-            className={`absolute group select-none transition-shadow z-30 ${
-              isEditing ? 'cursor-text' : 'cursor-move'
+            className={`absolute group select-none transition-shadow ${
+              isEditing ? 'cursor-text z-50' : 'cursor-move z-30'
             } ${
               tb.hasBackground ? 'bg-white' : 'bg-transparent'
             } ${
@@ -6346,38 +9259,104 @@ export default function App() {
               width: tb.width,
               height: tb.height,
             }}
-            title="Ô chữ (Nhấp đúp để chỉnh sửa nội dung, kéo để di chuyển, kéo các điểm góc để chỉnh kích thước)"
+            title="Ô chữ (Nhấp đúp để gõ chữ, bôi đen từng từ để chỉnh trên thanh công cụ)"
           >
-            {/* Editing mode: Textarea */}
+            {/* Editing mode: In-place Textarea without extra popup frames */}
             {isEditing ? (
-              <textarea
-                autoFocus
-                value={tb.text}
-                onChange={(e) => {
-                  updateCurrentTextBox({ text: e.target.value });
-                }}
-                onBlur={() => {
-                  setEditingTextBoxId(null);
-                }}
-                onMouseDown={(e) => e.stopPropagation()}
-                className="w-full h-full p-1 bg-transparent resize-none outline-none border-none leading-tight overflow-hidden focus:ring-0 select-text"
-                style={{
-                  fontFamily: fontFamilyCss,
-                  fontSize: `${(tb.fontSize || 12) * 1.5}px`,
-                  fontWeight: tb.isBold ? 700 : 400,
-                  fontStyle: tb.isItalic ? 'italic' : 'normal',
-                  color: tb.color || '#000000',
-                  textAlign: tb.textAlign || 'left',
-                }}
-                placeholder="Nhập nội dung chữ..."
-              />
+              <div className="relative w-full h-full">
+                {hasMultipleTbSpans && (
+                  <div
+                    className="absolute inset-0 p-1 pointer-events-none select-none overflow-hidden whitespace-pre-wrap break-words"
+                    style={{
+                      fontFamily: fontFamilyCss,
+                      fontSize: `${(tb.fontSize || 12) * 1.5}px`,
+                      lineHeight: tb.lineHeight || 1.25,
+                      fontWeight: tb.isBold ? 700 : 400,
+                      fontStyle: tb.isItalic ? 'italic' : 'normal',
+                      color: tb.color || '#000000',
+                      textAlign: tb.textAlign || 'left',
+                    }}
+                  >
+                    {activeTbSpans.map((seg, sIdx) => (
+                      <span
+                        key={sIdx}
+                        style={{
+                          fontFamily: getFontFamily(seg.fontFamily || tb.fontFamily || 'Times New Roman'),
+                          fontSize: `${(seg.fontSize || tb.fontSize || 12) * 1.5}px`,
+                          fontWeight: (seg.isBold ?? tb.isBold) ? 700 : 400,
+                          fontStyle: (seg.isItalic ?? tb.isItalic) ? 'italic' : 'normal',
+                          color: seg.color || tb.color || '#000000',
+                        }}
+                      >
+                        {seg.text}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <textarea
+                  id={`tb-textarea-${tb.id}`}
+                  autoFocus
+                  value={tb.text}
+                  onChange={(e) => {
+                    updateCurrentTextBox({ text: e.target.value });
+                  }}
+                  onSelect={(e) => {
+                    const el = e.currentTarget;
+                    if (el.selectionEnd > el.selectionStart) {
+                      setTbSelectionRange({ id: tb.id, start: el.selectionStart, end: el.selectionEnd });
+                    } else {
+                      setTbSelectionRange(null);
+                    }
+                  }}
+                  onMouseUp={(e) => {
+                    const el = e.currentTarget;
+                    if (el.selectionEnd > el.selectionStart) {
+                      setTbSelectionRange({ id: tb.id, start: el.selectionStart, end: el.selectionEnd });
+                    } else {
+                      setTbSelectionRange(null);
+                    }
+                  }}
+                  onKeyUp={(e) => {
+                    const el = e.currentTarget;
+                    if (el.selectionEnd > el.selectionStart) {
+                      setTbSelectionRange({ id: tb.id, start: el.selectionStart, end: el.selectionEnd });
+                    } else {
+                      setTbSelectionRange(null);
+                    }
+                  }}
+                  onBlur={(e) => {
+                    const related = e.relatedTarget as HTMLElement | null;
+                    if (related && related.closest('#textbox-ribbon-bar')) {
+                      return;
+                    }
+                    setEditingTextBoxId(null);
+                    setTbSelectionRange(null);
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  className={`relative z-10 w-full h-full p-1 bg-transparent resize-none outline-none border-none overflow-hidden focus:ring-0 select-text ${
+                    hasMultipleTbSpans ? 'selection:bg-blue-500/25 selection:text-transparent' : ''
+                  }`}
+                  style={{
+                    fontFamily: getFontFamily(primaryTbSpan?.fontFamily || tb.fontFamily || 'Times New Roman'),
+                    fontSize: `${(primaryTbSpan?.fontSize || tb.fontSize || 12) * 1.5}px`,
+                    lineHeight: tb.lineHeight || 1.25,
+                    fontWeight: (primaryTbSpan?.isBold ?? tb.isBold) ? 700 : 400,
+                    fontStyle: (primaryTbSpan?.isItalic ?? tb.isItalic) ? 'italic' : 'normal',
+                    color: hasMultipleTbSpans ? 'transparent' : (primaryTbSpan?.color || tb.color || '#000000'),
+                    caretColor: '#000000',
+                    textAlign: tb.textAlign || 'left',
+                  }}
+                  placeholder="Nhập nội dung chữ..."
+                />
+              </div>
             ) : (
-              /* Display mode */
+              /* Display mode with per-span rich-text styles */
               <div 
-                className="w-full h-full p-1 overflow-hidden whitespace-pre-wrap break-words leading-tight"
+                className="w-full h-full p-1 overflow-hidden whitespace-pre-wrap break-words"
                 style={{
                   fontFamily: fontFamilyCss,
                   fontSize: `${(tb.fontSize || 12) * 1.5}px`,
+                  lineHeight: tb.lineHeight || 1.25,
                   fontWeight: tb.isBold ? 700 : 400,
                   fontStyle: tb.isItalic ? 'italic' : 'normal',
                   color: tb.color || '#000000',
@@ -6385,7 +9364,20 @@ export default function App() {
                 }}
               >
                 {tb.text ? (
-                  tb.text
+                  activeTbSpans.map((seg, sIdx) => (
+                    <span
+                      key={sIdx}
+                      style={{
+                        fontFamily: getFontFamily(seg.fontFamily || tb.fontFamily || 'Times New Roman'),
+                        fontSize: `${(seg.fontSize || tb.fontSize || 12) * 1.5}px`,
+                        fontWeight: (seg.isBold ?? tb.isBold) ? 700 : 400,
+                        fontStyle: (seg.isItalic ?? tb.isItalic) ? 'italic' : 'normal',
+                        color: seg.color || tb.color || '#000000',
+                      }}
+                    >
+                      {seg.text}
+                    </span>
+                  ))
                 ) : (
                   <span className="text-gray-400 italic text-xs select-none">
                     Nhấp đúp để nhập chữ...
@@ -6843,6 +9835,108 @@ export default function App() {
       });
   }
 
+  function renderImages(pageIndex: number) {
+    return images
+      .filter(img => img.pageIndex === pageIndex)
+      .map(img => {
+        const isSelected = img.id === selectedImageId;
+        return (
+          <div
+            key={img.id}
+            id={`image-${img.id}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setSelectedImageId(img.id);
+              setSelectedShapeId(null);
+              setSelectedFieldId(null);
+              setSelectedHighlightId(null);
+              setSelectedTextBoxId(null);
+              setSelectedTextId(null);
+            }}
+            onMouseDown={(e) => {
+              if (isDigitallySigned) return;
+              e.stopPropagation();
+              setSelectedImageId(img.id);
+              setSelectedShapeId(null);
+              setSelectedFieldId(null);
+              setSelectedHighlightId(null);
+              setSelectedTextBoxId(null);
+              setSelectedTextId(null);
+              handleImageResizeDown(e, img, 'drag');
+            }}
+            className={`absolute group select-none transition-shadow z-25 cursor-move ${
+              isSelected ? 'ring-2 ring-indigo-600 ring-offset-1 shadow-md' : 'hover:ring-1 hover:ring-indigo-400/70'
+            }`}
+            style={{
+              left: img.x,
+              top: img.y,
+              width: img.width,
+              height: img.height,
+            }}
+          >
+            <img
+              src={img.dataUrl}
+              alt=""
+              className="w-full h-full object-fill pointer-events-none select-none block"
+            />
+
+            {isSelected && !isDigitallySigned && (
+              <>
+                {/* 4 Corners: To / Nhỏ (Proportional scale) */}
+                <div
+                  onMouseDown={(e) => handleImageResizeDown(e, img, 'nw')}
+                  className="absolute -top-1.5 -left-1.5 w-3.5 h-3.5 bg-white border-2 border-indigo-600 rounded-full cursor-nw-resize z-40 shadow-xs hover:scale-125 transition-transform"
+                />
+                <div
+                  onMouseDown={(e) => handleImageResizeDown(e, img, 'ne')}
+                  className="absolute -top-1.5 -right-1.5 w-3.5 h-3.5 bg-white border-2 border-indigo-600 rounded-full cursor-ne-resize z-40 shadow-xs hover:scale-125 transition-transform"
+                />
+                <div
+                  onMouseDown={(e) => handleImageResizeDown(e, img, 'se')}
+                  className="absolute -bottom-1.5 -right-1.5 w-3.5 h-3.5 bg-white border-2 border-indigo-600 rounded-full cursor-se-resize z-40 shadow-xs hover:scale-125 transition-transform"
+                />
+                <div
+                  onMouseDown={(e) => handleImageResizeDown(e, img, 'sw')}
+                  className="absolute -bottom-1.5 -left-1.5 w-3.5 h-3.5 bg-white border-2 border-indigo-600 rounded-full cursor-sw-resize z-40 shadow-xs hover:scale-125 transition-transform"
+                />
+
+                {/* 4 Edges: Dài / Rộng (Independent width/height) */}
+                <div
+                  onMouseDown={(e) => handleImageResizeDown(e, img, 'n')}
+                  className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-4 h-2.5 bg-white border-2 border-indigo-600 rounded-xs cursor-n-resize z-40 shadow-xs hover:scale-125 transition-transform"
+                />
+                <div
+                  onMouseDown={(e) => handleImageResizeDown(e, img, 's')}
+                  className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-4 h-2.5 bg-white border-2 border-indigo-600 rounded-xs cursor-s-resize z-40 shadow-xs hover:scale-125 transition-transform"
+                />
+                <div
+                  onMouseDown={(e) => handleImageResizeDown(e, img, 'w')}
+                  className="absolute top-1/2 -translate-y-1/2 -left-1.5 w-2.5 h-4 bg-white border-2 border-indigo-600 rounded-xs cursor-w-resize z-40 shadow-xs hover:scale-125 transition-transform"
+                />
+                <div
+                  onMouseDown={(e) => handleImageResizeDown(e, img, 'e')}
+                  className="absolute top-1/2 -translate-y-1/2 -right-1.5 w-2.5 h-4 bg-white border-2 border-indigo-600 rounded-xs cursor-e-resize z-40 shadow-xs hover:scale-125 transition-transform"
+                />
+
+                {/* Delete button */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setImages(prev => prev.filter(item => item.id !== img.id));
+                    setSelectedImageId(null);
+                  }}
+                  className="absolute -top-3.5 -right-3.5 w-6 h-6 bg-red-600 hover:bg-red-700 text-white rounded-full flex items-center justify-center shadow-lg transition-all z-50 cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5 stroke-[2.5]" />
+                </button>
+              </>
+            )}
+          </div>
+        );
+      });
+  }
+
   function handleSelectText(t: PdfTextItem) {
     if (isDigitallySigned) {
       alert("Tài liệu hiện tại đã được ký số. Không thể sửa nội dung chữ gốc.");
@@ -6851,24 +9945,16 @@ export default function App() {
     setSelectedTextId(t.id);
     setEditingTextId(t.id);
     ensureFontsLoaded();
-    if (!t.isModified) {
-      setPdfTexts(prev => prev.map(item => {
-        if (item.id === t.id) {
-          return { ...item, isModified: true };
-        }
-        return item;
-      }));
-    }
   }
 
   function renderOriginalTexts(pageIndex: number) {
     if (activeTool !== 'Edit Text') return null;
     return pdfTexts
-      .filter(t => t.pageIndex === pageIndex && !t.isModified)
+      .filter(t => t.pageIndex === pageIndex && !t.isModified && t.id !== editingTextId)
       .map(t => {
         const borderStyleClass = showTextHighlights 
-          ? "border border-dashed border-indigo-400/50 bg-indigo-50/15 hover:border-blue-600 hover:bg-blue-100/30" 
-          : "border border-dashed border-transparent hover:border-blue-500/70 hover:bg-blue-100/25";
+          ? "outline outline-1 outline-dashed outline-indigo-400/45 bg-indigo-50/10 hover:outline-blue-600 hover:bg-blue-100/20" 
+          : "hover:outline hover:outline-1 hover:outline-dashed hover:outline-blue-500/70 hover:bg-blue-100/15";
 
         return (
           <div
@@ -6878,12 +9964,12 @@ export default function App() {
               handleSelectText(t);
             }}
             onMouseDown={(e) => e.stopPropagation()}
-            className={`absolute cursor-pointer transition-all z-20 ${borderStyleClass} rounded-xs`}
+            className={`absolute cursor-text transition-colors z-20 ${borderStyleClass} rounded-[1px]`}
             style={{
-              left: t.x - 2,
-              top: t.y - 2,
-              width: t.width + 4,
-              height: t.height + 4,
+              left: t.x,
+              top: t.y,
+              width: t.width,
+              height: t.height,
             }}
           />
         );
@@ -6892,7 +9978,7 @@ export default function App() {
 
   function renderModifiedTextsOverlay(pageIndex: number) {
     return pdfTexts
-      .filter(t => t.pageIndex === pageIndex && t.isModified)
+      .filter(t => t.pageIndex === pageIndex && (t.isModified || t.id === editingTextId))
       .map(t => {
         const isSelected = selectedTextId === t.id;
         const isEditing = editingTextId === t.id;
@@ -6908,163 +9994,256 @@ export default function App() {
         // Font size on 1.5x scaled PDF canvas
         const sizeToUse = (t.customFontSize || t.fontSize) * 1.5;
 
-        // Position coordinates aligned with the dashed highlight box (top-left)
-        const posX = t.x + (t.offsetX || 0) - 2;
-        const posY = t.y + (t.offsetY || 0) - 2;
+        // Exact baseline-aligned coordinates (0px shift from original PDF text)
+        const baselineY = t.baselineY ?? (t.y + t.height * 0.82);
+        const posX = t.x + (t.offsetX || 0);
+        const posY = baselineY - sizeToUse * 0.82 + (t.offsetY || 0);
+
+        // Original bounding box for complete whiteout erasure of underlying PDF bitmap
+        const origWidth = t.originalWidth || (t.pdfWidth * 1.5) || t.width;
+        const origHeight = (t.pdfHeight || t.fontSize) * 1.5;
+        const origTop = baselineY - origHeight * 0.86;
+
+        const pageRot = pages[pageIndex]?.pageRotation || 0;
+        const screenRot = ((t.rotation || 0) - pageRot + 360) % 360;
+        const activeSpans = getNormalizedSpans(t);
 
         if (isEditing) {
-          const maxAvailableWidth = Math.max(300, pageWidth - posX - 20);
-          // Wide enough to display the full sentence comfortably up to page width
-          const editBoxWidth = Math.min(Math.max(t.width + 50, 320), maxAvailableWidth);
+          const maxAvailableWidth = Math.max(40, pageWidth - posX - 12);
+          const editBoxWidth = Math.min(Math.max(t.width + 6, origWidth + 4, 28), maxAvailableWidth);
+          const hasMultipleSpans = activeSpans.length > 1;
+          const primarySpan = activeSpans[0];
+          const maxEditSpanSizePx = Math.max(
+            sizeToUse,
+            ...activeSpans.map(s => (s.fontSize || t.customFontSize || t.fontSize) * 1.5)
+          );
 
           return (
-            <div
-              key={t.id}
-              className="absolute z-50 bg-white border-2 border-indigo-600 rounded-md shadow-2xl"
-              style={{
-                left: Math.max(2, posX),
-                top: Math.max(2, posY),
-                width: editBoxWidth,
-                minHeight: Math.max(t.height + 6, sizeToUse + 8),
-                transform: `rotate(${t.rotation || 0}deg)`,
-                transformOrigin: 'left top',
-              }}
-              onMouseDown={(e) => e.stopPropagation()}
-            >
-              {/* Floating Action Bar ABOVE the box so it NEVER covers any text */}
-              <div 
-                className="absolute -top-7 right-0 flex items-center gap-1.5 bg-gray-900/95 text-white text-[10px] px-2 py-0.5 rounded shadow-lg z-50 whitespace-nowrap select-none backdrop-blur-xs"
+            <React.Fragment key={t.id}>
+              {hasBg && (
+                <div
+                  className="absolute bg-white pointer-events-none z-25"
+                  style={{
+                    left: t.x - 1.5,
+                    top: origTop,
+                    width: origWidth + 3,
+                    height: origHeight * 1.2,
+                  }}
+                />
+              )}
+              <div
+                className="absolute z-50 bg-white"
+                style={{
+                  left: posX,
+                  top: posY,
+                  width: editBoxWidth,
+                  minHeight: maxEditSpanSizePx * 1.05,
+                  outline: '1px dashed #2563eb',
+                  outlineOffset: '1px',
+                  transform: `rotate(${screenRot}deg)`,
+                  transformOrigin: 'left top',
+                }}
                 onMouseDown={(e) => e.stopPropagation()}
               >
-                <button
-                  type="button"
-                  onClick={() => {
-                    const el = document.getElementById(`edit-textarea-${t.id}`) as HTMLTextAreaElement | null;
-                    if (el) handleSaveTextEdit(t.id, el.value);
-                  }}
-                  className="flex items-center gap-1 text-emerald-400 hover:text-emerald-300 font-semibold cursor-pointer px-1 py-0.5"
-                >
-                  <Check className="w-3 h-3 stroke-[3]" /> Lưu (Enter)
-                </button>
-                <span className="text-gray-500">|</span>
-                <button
-                  type="button"
-                  onClick={() => setEditingTextId(null)}
-                  className="flex items-center gap-0.5 text-gray-300 hover:text-white cursor-pointer px-1 py-0.5"
-                >
-                  <X className="w-3 h-3" /> Hủy (Esc)
-                </button>
-              </div>
+                {/* Live per-word rich-text overlay right at the original document position */}
+                {hasMultipleSpans && (
+                  <div
+                    className="absolute inset-0 pointer-events-none select-none whitespace-pre overflow-hidden flex items-baseline"
+                    style={{
+                      lineHeight: 1,
+                      height: `${maxEditSpanSizePx * 1.08}px`,
+                    }}
+                  >
+                    {activeSpans.map((seg, sIdx) => {
+                      const segSizePx = (seg.fontSize || t.customFontSize || t.fontSize) * 1.5;
+                      const segFont = getFontFamily(seg.fontFamily || t.customFontFamily || t.fontName);
+                      const segBold = (seg.isBold ?? t.isBold) ? 700 : 400;
+                      const segItalic = (seg.isItalic ?? t.isItalic) ? 'italic' : 'normal';
+                      const segColor = seg.color || customColor;
+                      return (
+                        <span
+                          key={sIdx}
+                          style={{
+                            fontSize: `${segSizePx}px`,
+                            fontFamily: segFont,
+                            fontWeight: segBold,
+                            fontStyle: segItalic,
+                            color: segColor,
+                            lineHeight: 1,
+                          }}
+                        >
+                          {seg.text}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
 
-              {/* Textarea that wraps and auto-expands so NO WORDS are ever hidden or cut off */}
-              <textarea
-                id={`edit-textarea-${t.id}`}
-                defaultValue={t.text}
-                autoFocus
-                rows={1}
-                onFocus={(e) => {
-                  e.currentTarget.scrollLeft = 0;
-                  e.currentTarget.scrollTop = 0;
-                  const len = e.currentTarget.value.length;
-                  e.currentTarget.setSelectionRange(len, len);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSaveTextEdit(t.id, e.currentTarget.value);
-                  } else if (e.key === 'Escape') {
-                    e.preventDefault();
-                    setEditingTextId(null);
-                  }
-                }}
-                onBlur={(e) => {
-                  handleSaveTextEdit(t.id, e.target.value);
-                }}
-                onInput={(e) => {
-                  const el = e.currentTarget;
-                  el.style.height = 'auto';
-                  el.style.height = `${Math.max(t.height + 4, el.scrollHeight)}px`;
-                }}
-                className="w-full h-full px-1 py-0.5 outline-none text-black bg-white resize-none overflow-hidden block"
-                style={{
-                  fontSize: `${sizeToUse}px`,
-                  fontFamily: fontFamily,
-                  fontStyle: fontStyle,
-                  fontWeight: fontWeight,
-                  color: customColor,
-                  lineHeight: 1.2,
-                  minHeight: `${Math.max(t.height + 2, sizeToUse + 4)}px`,
-                  WebkitFontSmoothing: 'antialiased',
-                  MozOsxFontSmoothing: 'grayscale',
-                  textRendering: 'optimizeLegibility',
-                  fontFeatureSettings: '"kern" 1, "liga" 1',
-                }}
-              />
-            </div>
+                {/* Zero-padding inline textarea at exact document coordinates */}
+                <textarea
+                  id={`edit-textarea-${t.id}`}
+                  defaultValue={t.text}
+                  autoFocus
+                  rows={1}
+                  onFocus={(e) => {
+                    e.currentTarget.scrollLeft = 0;
+                    e.currentTarget.scrollTop = 0;
+                  }}
+                  onSelect={(e) => {
+                    const el = e.currentTarget;
+                    if (el.selectionEnd > el.selectionStart) {
+                      setEditSelectionRange({ id: t.id, start: el.selectionStart, end: el.selectionEnd });
+                    } else {
+                      setEditSelectionRange(null);
+                    }
+                  }}
+                  onMouseUp={(e) => {
+                    const el = e.currentTarget;
+                    if (el.selectionEnd > el.selectionStart) {
+                      setEditSelectionRange({ id: t.id, start: el.selectionStart, end: el.selectionEnd });
+                    } else {
+                      setEditSelectionRange(null);
+                    }
+                  }}
+                  onKeyUp={(e) => {
+                    const el = e.currentTarget;
+                    if (el.selectionEnd > el.selectionStart) {
+                      setEditSelectionRange({ id: t.id, start: el.selectionStart, end: el.selectionEnd });
+                    } else {
+                      setEditSelectionRange(null);
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSaveTextEdit(t.id, e.currentTarget.value);
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault();
+                      setEditingTextId(null);
+                      setEditSelectionRange(null);
+                    }
+                  }}
+                  onBlur={(e) => {
+                    const related = e.relatedTarget as HTMLElement | null;
+                    if (related && related.closest('#edit-text-ribbon-bar')) {
+                      handleSaveTextEdit(t.id, e.target.value, true);
+                      return;
+                    }
+                    handleSaveTextEdit(t.id, e.target.value);
+                  }}
+                  onInput={(e) => {
+                    const el = e.currentTarget;
+                    el.style.height = 'auto';
+                    el.style.height = `${Math.max(maxEditSpanSizePx * 1.05, el.scrollHeight)}px`;
+                    handleSaveTextEdit(t.id, el.value, true);
+                  }}
+                  className={`relative z-10 w-full p-0 m-0 border-0 outline-none resize-none overflow-hidden block ${
+                    hasMultipleSpans ? 'bg-transparent selection:bg-blue-500/25 selection:text-transparent' : 'bg-white'
+                  }`}
+                  style={{
+                    fontSize: `${(primarySpan?.fontSize ? primarySpan.fontSize * 1.5 : sizeToUse)}px`,
+                    fontFamily: getFontFamily(primarySpan?.fontFamily || t.customFontFamily || t.fontName),
+                    fontStyle: (primarySpan?.isItalic ?? t.isItalic) ? 'italic' : 'normal',
+                    fontWeight: (primarySpan?.isBold ?? t.isBold) ? 700 : 400,
+                    color: hasMultipleSpans ? 'transparent' : (primarySpan?.color || customColor),
+                    caretColor: '#000000',
+                    lineHeight: 1,
+                    height: `${maxEditSpanSizePx * 1.08}px`,
+                    WebkitFontSmoothing: 'antialiased',
+                    MozOsxFontSmoothing: 'grayscale',
+                    textRendering: 'geometricPrecision',
+                    fontFeatureSettings: '"kern" 1, "liga" 1',
+                  }}
+                />
+              </div>
+            </React.Fragment>
           );
         }
 
+        const maxSpanSizePx = Math.max(
+          sizeToUse,
+          ...activeSpans.map(s => (s.fontSize || t.customFontSize || t.fontSize) * 1.5)
+        );
+
         return (
-          <div
-            key={t.id}
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              setSelectedTextId(t.id);
-              setEditingTextId(t.id);
-            }}
-            className={`absolute cursor-pointer transition-all z-30 group select-none ${
-              isSelected ? 'ring-2 ring-indigo-600 border border-indigo-500 bg-indigo-50/15 shadow-sm' : 'hover:ring-1 hover:ring-indigo-400'
-            }`}
-            style={{
-              left: posX,
-              top: posY,
-              minWidth: t.width + 4,
-              minHeight: t.height + 4,
-              fontSize: `${sizeToUse}px`,
-              fontFamily: fontFamily,
-              fontStyle: fontStyle,
-              fontWeight: fontWeight,
-              color: customColor,
-              lineHeight: 1.2,
-              WebkitFontSmoothing: 'antialiased',
-              MozOsxFontSmoothing: 'grayscale',
-              textRendering: 'optimizeLegibility',
-              fontFeatureSettings: '"kern" 1, "liga" 1',
-              transform: `rotate(${t.rotation || 0}deg)`,
-              transformOrigin: 'left top',
-            }}
-          >
+          <React.Fragment key={t.id}>
             {hasBg && (
-              <div 
-                className="absolute bg-white pointer-events-none" 
+              <div
+                className="absolute bg-white pointer-events-none z-25"
                 style={{
-                  left: -2,
-                  top: -1,
-                  width: 'calc(100% + 4px)',
-                  height: 'calc(100% + 2px)',
-                  minWidth: `${t.width + 4}px`,
-                  minHeight: `${t.height + 2}px`,
-                  zIndex: -1,
+                  left: t.x - 1.5,
+                  top: origTop,
+                  width: origWidth + 3,
+                  height: origHeight * 1.2,
                 }}
               />
             )}
-            <span className="block px-0 select-none whitespace-pre-wrap">{t.text}</span>
+            <div
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedTextId(t.id);
+                setEditingTextId(t.id);
+              }}
+              className={`absolute cursor-text transition-colors z-30 group select-none ${
+                isSelected
+                  ? 'outline outline-1 outline-dashed outline-indigo-600'
+                  : activeTool === 'Edit Text'
+                  ? 'hover:outline hover:outline-1 hover:outline-dashed hover:outline-blue-500/80'
+                  : ''
+              }`}
+              style={{
+                left: posX,
+                top: posY,
+                minWidth: Math.max(12, t.width),
+                minHeight: maxSpanSizePx,
+                fontSize: `${sizeToUse}px`,
+                fontFamily: fontFamily,
+                fontStyle: fontStyle,
+                fontWeight: fontWeight,
+                color: customColor,
+                lineHeight: 1,
+                outlineOffset: '2px',
+                WebkitFontSmoothing: 'antialiased',
+                MozOsxFontSmoothing: 'grayscale',
+                textRendering: 'geometricPrecision',
+                fontFeatureSettings: '"kern" 1, "liga" 1',
+                transform: `rotate(${screenRot}deg)`,
+                transformOrigin: 'left top',
+              }}
+            >
+              {hasBg && (
+                <div 
+                  className="absolute bg-white pointer-events-none" 
+                  style={{
+                    left: -1,
+                    top: -Math.max(1, maxSpanSizePx * 0.06),
+                    width: 'calc(100% + 2px)',
+                    height: `${maxSpanSizePx * 1.16}px`,
+                    zIndex: -1,
+                  }}
+                />
+              )}
+              <span className="inline-flex items-baseline p-0 m-0 select-none whitespace-pre">
+                {activeSpans.map((seg, segIdx) => (
+                  <span
+                    key={segIdx}
+                    style={{
+                      fontFamily: getFontFamily(seg.fontFamily || t.customFontFamily || t.fontName),
+                      fontSize: `${(seg.fontSize || t.customFontSize || t.fontSize) * 1.5}px`,
+                      fontWeight: (seg.isBold ?? t.isBold) ? 700 : 400,
+                      fontStyle: (seg.isItalic ?? t.isItalic) ? 'italic' : 'normal',
+                      color: seg.color || t.customColor || '#000000',
+                      lineHeight: 1,
+                    }}
+                  >
+                    {seg.text}
+                  </span>
+                ))}
+              </span>
 
-            {/* Selection indicators & floating action pill */}
-            {isSelected && !isDigitallySigned && (
-              <>
-                {/* 8 anchor points */}
-                <div className="absolute -top-1 -left-1 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
-                <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
-                <div className="absolute -top-1 -right-1 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
-                <div className="absolute top-1/2 -left-1 -translate-y-1/2 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
-                <div className="absolute top-1/2 -right-1 -translate-y-1/2 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
-                <div className="absolute -bottom-1 -left-1 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
-                <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
-                <div className="absolute -bottom-1 -right-1 w-2 h-2 bg-indigo-600 border border-white rounded-xs"></div>
-
-                {/* Floating pill above bounding box */}
+              {/* Selection indicators & floating action pill */}
+              {isSelected && !isDigitallySigned && (
                 <div 
                   className="absolute -top-7 left-0 flex items-center gap-1.5 bg-gray-900/90 text-white text-[10px] px-2 py-0.5 rounded shadow-lg z-50 whitespace-nowrap backdrop-blur-xs select-none"
                   onMouseDown={(e) => e.stopPropagation()}
@@ -7089,25 +10268,26 @@ export default function App() {
                     }} 
                     className="hover:text-red-300 text-gray-300 cursor-pointer flex items-center gap-0.5 font-medium"
                   >
-                    <RotateCcw className="w-2.5 h-2.5" /> Gốc
+                    <RotateCcw className="w-2.5 h-2.5" /> Khôi phục gốc
                   </button>
                 </div>
-              </>
-            )}
+              )}
 
-            {!isSelected && !isDigitallySigned && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleRestoreText(t.id);
-                  if (selectedTextId === t.id) setSelectedTextId(null);
-                }}
-                className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-600 cursor-pointer shadow transition-all duration-150 z-50"
-              >
-                <X className="w-2.5 h-2.5 stroke-[3]" />
-              </button>
-            )}
-          </div>
+              {!isSelected && activeTool === 'Edit Text' && !isDigitallySigned && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleRestoreText(t.id);
+                    if (selectedTextId === t.id) setSelectedTextId(null);
+                  }}
+                  title="Khôi phục chữ gốc"
+                  className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-600 cursor-pointer shadow transition-all duration-150 z-50"
+                >
+                  <X className="w-2.5 h-2.5 stroke-[3]" />
+                </button>
+              )}
+            </div>
+          </React.Fragment>
         );
       });
   }
