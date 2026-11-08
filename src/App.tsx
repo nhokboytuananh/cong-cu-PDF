@@ -152,6 +152,15 @@ type Field = {
   fontSize?: number;
 };
 
+type SignatureTemplateItem = {
+  id: string;
+  keyword: string;
+  fieldName: string;
+  placement: 'right' | 'left' | 'bottom' | 'top' | 'overlap';
+  width: number;
+  height: number;
+};
+
 type PdfPage = {
   width: number;
   height: number;
@@ -428,6 +437,357 @@ export default function App() {
 
   const [showHelpModal, setShowHelpModal] = useState<boolean>(false);
   const [activeHelpTab, setActiveHelpTab] = useState<'document' | 'fields' | 'edit_text' | 'highlights' | 'shapes' | 'export_overwrite'>('document');
+
+  // Mẫu trường chữ ký lưu sẵn (Signature Field Templates)
+  const SIG_TEMPLATES_STORAGE_KEY = 'qnpc_signature_templates_v1';
+  const [signatureTemplates, setSignatureTemplates] = useState<SignatureTemplateItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('qnpc_signature_templates_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+  const [showSigTemplateModal, setShowSigTemplateModal] = useState<boolean>(false);
+  const [tplKeywordInput, setTplKeywordInput] = useState<string>('');
+  const [tplFieldNameInput, setTplFieldNameInput] = useState<string>('');
+  const [tplPlacementInput, setTplPlacementInput] = useState<'right' | 'left' | 'bottom' | 'top' | 'overlap'>('right');
+  const [tplWidthInput, setTplWidthInput] = useState<number>(110);
+  const [tplHeightInput, setTplHeightInput] = useState<number>(45);
+  const [activeSigTemplateId, setActiveSigTemplateId] = useState<string | null>(null);
+  const [sigScanPageOption, setSigScanPageOption] = useState<string>('current');
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIG_TEMPLATES_STORAGE_KEY, JSON.stringify(signatureTemplates));
+    } catch {}
+  }, [signatureTemplates]);
+
+  const getTargetScanPageIndices = (overrideOption?: string): number[] => {
+    if (pages.length === 0) return [];
+    const opt = overrideOption || sigScanPageOption;
+    if (opt === 'selected' && selectedPageIndices.length > 0) {
+      return [...selectedPageIndices].sort((a, b) => a - b);
+    }
+    if (opt === 'current') {
+      if (selectedPageIndices.length > 0) {
+        return [...selectedPageIndices].sort((a, b) => a - b);
+      }
+      const curIdx = Math.max(0, Math.min(pages.length - 1, currentPage - 1));
+      return [curIdx];
+    }
+    if (opt === 'last') {
+      return [pages.length - 1];
+    }
+    if (opt === 'all') {
+      return pages.map((_, idx) => idx);
+    }
+    if (opt.startsWith('page-')) {
+      const parsed = parseInt(opt.replace('page-', ''), 10);
+      if (!isNaN(parsed) && parsed >= 0 && parsed < pages.length) {
+        return [parsed];
+      }
+    }
+    return [Math.max(0, Math.min(pages.length - 1, currentPage - 1))];
+  };
+
+  const handleAddSignatureTemplate = (customKeyword?: string, customFieldName?: string, customW?: number, customH?: number) => {
+    const kw = (customKeyword !== undefined ? customKeyword : tplKeywordInput).trim();
+    if (!kw) {
+      alert('Vui lòng nhập Tên hoặc từ khóa cần nhận diện trên file PDF (ví dụ: Tuấn Anh, Giám đốc...).');
+      return;
+    }
+    const fn = ((customFieldName !== undefined ? customFieldName : tplFieldNameInput) || kw).trim();
+    const w = Math.max(40, Math.min(400, Number(customW ?? tplWidthInput) || 110));
+    const h = Math.max(24, Math.min(250, Number(customH ?? tplHeightInput) || 45));
+
+    const newTpl: SignatureTemplateItem = {
+      id: `sigtpl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      keyword: kw,
+      fieldName: fn,
+      placement: tplPlacementInput,
+      width: w,
+      height: h,
+    };
+
+    setSignatureTemplates(prev => [...prev, newTpl]);
+    if (customKeyword === undefined) {
+      setTplKeywordInput('');
+      setTplFieldNameInput('');
+    }
+    triggerSaveToast(`Đã lưu mẫu "${kw}"`, `Chọn trang cần ký và bấm Tạo trường ký theo mẫu để tự đặt vào tên "${fn}".`);
+  };
+
+  const handleDeleteSignatureTemplate = (id: string) => {
+    setSignatureTemplates(prev => prev.filter(item => item.id !== id));
+    if (activeSigTemplateId === id) setActiveSigTemplateId(null);
+  };
+
+  const handleUpdateSignatureTemplate = (id: string, updates: Partial<SignatureTemplateItem>) => {
+    setSignatureTemplates(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
+  };
+
+  const handleAutoCreateSignatureFields = (specificTemplates?: SignatureTemplateItem[], overridePageOption?: string) => {
+    if (isDigitallySigned) {
+      alert('Tài liệu hiện tại đã bị khóa.');
+      return;
+    }
+    const listToUse = specificTemplates && specificTemplates.length > 0 ? specificTemplates : signatureTemplates;
+    if (listToUse.length === 0) {
+      setActiveTool('Signature Field');
+      setShowSigTemplateModal(true);
+      return;
+    }
+    if (pages.length === 0 || pdfTexts.length === 0) {
+      alert('Vui lòng tải file PDF có văn bản lên trước khi quét trang và tạo trường ký theo mẫu.');
+      return;
+    }
+
+    const targetPageIndices = getTargetScanPageIndices(overridePageOption);
+    if (targetPageIndices.length === 0) return;
+    const targetPageLabel = targetPageIndices.map(i => `Trang ${i + 1}`).join(', ');
+
+    const measureCanvas = document.createElement('canvas');
+    const measureCtx = measureCanvas.getContext('2d');
+
+    const newFieldsToCreate: Field[] = [];
+    const existingAndNewFields = [...fields];
+    let matchedTemplateCount = 0;
+
+    for (const tpl of listToUse) {
+      const kwNorm = (tpl.keyword || '').trim().normalize('NFC');
+      if (!kwNorm) continue;
+      const kwLower = kwNorm.toLowerCase();
+      const kwCollapsed = kwLower.replace(/\s+/g, ' ');
+
+      const matchesForTpl: Array<{
+        pageIndex: number;
+        matchX: number;
+        matchY: number;
+        matchW: number;
+        matchH: number;
+      }> = [];
+
+      // Chỉ quét trên các trang được chọn (không quét toàn bộ file nếu không yêu cầu)
+      for (const pIdx of targetPageIndices) {
+        const pageItems = pdfTexts.filter(t => t.pageIndex === pIdx && t.text && t.text.trim().length > 0);
+        const pageMatches: Array<{
+          pageIndex: number;
+          matchX: number;
+          matchY: number;
+          matchW: number;
+          matchH: number;
+        }> = [];
+
+        // Bước 1: Tìm trực tiếp trong từng dòng/cụm chữ PdfTextItem trên trang đã chọn
+        for (const t of pageItems) {
+          const itemNorm = t.text.normalize('NFC');
+          const itemLower = itemNorm.toLowerCase();
+
+          let searchPos = 0;
+          while (searchPos < itemLower.length) {
+            const idx = itemLower.indexOf(kwLower, searchPos);
+            if (idx === -1) break;
+
+            let matchX = t.x + (t.offsetX || 0);
+            let matchW = t.width;
+            const matchY = t.y + (t.offsetY || 0);
+            const matchH = t.height;
+
+            if (measureCtx && itemNorm.length > kwNorm.length) {
+              try {
+                const szPx = (t.customFontSize || t.fontSize || 12) * 1.5;
+                const ff = getFontFamily(t.customFontFamily || t.fontName);
+                measureCtx.font = `${t.isItalic ? 'italic ' : ''}${t.isBold ? '700 ' : '400 '}${szPx}px ${ff}`;
+                const fullMeasured = measureCtx.measureText(itemNorm).width;
+                const prefixMeasured = measureCtx.measureText(itemNorm.slice(0, idx)).width;
+                const subMeasured = measureCtx.measureText(itemNorm.slice(idx, idx + kwNorm.length)).width;
+                if (fullMeasured > 0) {
+                  const scaleRatio = t.width / fullMeasured;
+                  matchX = t.x + (t.offsetX || 0) + prefixMeasured * scaleRatio;
+                  matchW = Math.max(18, subMeasured * scaleRatio);
+                }
+              } catch {}
+            }
+
+            pageMatches.push({
+              pageIndex: pIdx,
+              matchX,
+              matchY,
+              matchW,
+              matchH,
+            });
+            searchPos = idx + kwLower.length;
+          }
+        }
+
+        // Bước 2: Nếu từ khóa bị tách qua nhiều PdfTextItem liên tiếp trên cùng 1 dòng
+        if (pageMatches.length === 0) {
+          const sortedLineItems = [...pageItems].sort((a, b) => {
+            if (Math.abs(a.y - b.y) > Math.max(4, a.height * 0.5)) return a.y - b.y;
+            return a.x - b.x;
+          });
+          const lines: PdfTextItem[][] = [];
+          for (const it of sortedLineItems) {
+            const lastLine = lines.length > 0 ? lines[lines.length - 1] : null;
+            if (lastLine && Math.abs(lastLine[0].y - it.y) <= Math.max(5, lastLine[0].height * 0.55)) {
+              lastLine.push(it);
+            } else {
+              lines.push([it]);
+            }
+          }
+
+          for (const line of lines) {
+            line.sort((a, b) => a.x - b.x);
+            let combined = '';
+            const segments: Array<{ start: number; end: number; item: PdfTextItem }> = [];
+            for (const it of line) {
+              if (combined.length > 0 && !combined.endsWith(' ') && !it.text.startsWith(' ')) {
+                combined += ' ';
+              }
+              const s = combined.length;
+              const norm = it.text.normalize('NFC');
+              combined += norm;
+              segments.push({ start: s, end: combined.length, item: it });
+            }
+            const combinedLower = combined.toLowerCase();
+            const idx = combinedLower.indexOf(kwCollapsed);
+            if (idx !== -1) {
+              const endIdx = idx + kwCollapsed.length;
+              const hitSegs = segments.filter(sg => sg.end > idx && sg.start < endIdx);
+              if (hitSegs.length > 0) {
+                const firstIt = hitSegs[0].item;
+                const lastIt = hitSegs[hitSegs.length - 1].item;
+                const mX = firstIt.x + (firstIt.offsetX || 0);
+                const mEnd = lastIt.x + (lastIt.offsetX || 0) + lastIt.width;
+                pageMatches.push({
+                  pageIndex: pIdx,
+                  matchX: mX,
+                  matchY: firstIt.y + (firstIt.offsetY || 0),
+                  matchW: Math.max(20, mEnd - mX),
+                  matchH: Math.max(firstIt.height, lastIt.height),
+                });
+              }
+            }
+          }
+        }
+
+        // Nếu trên trang được chọn có nhiều vị trí xuất hiện cùng từ khóa (VD: tiêu đề trên đầu và mục ký ở cuối trang),
+        // ưu tiên lấy đúng vị trí mục ký ở phía dưới cùng của trang (matchY lớn nhất) để đặt đúng chỗ tên người ký
+        if (pageMatches.length > 0) {
+          pageMatches.sort((a, b) => a.matchY - b.matchY);
+          matchesForTpl.push(pageMatches[pageMatches.length - 1]);
+        }
+      }
+
+      if (matchesForTpl.length > 0) {
+        matchedTemplateCount++;
+      }
+
+      for (const m of matchesForTpl) {
+        const fw = Math.max(40, tpl.width || 110);
+        const fh = Math.max(24, tpl.height || 45);
+        const pageW = pages[m.pageIndex]?.width || 800;
+        const pageH = pages[m.pageIndex]?.height || 1131;
+
+        let fx = m.matchX + m.matchW + 8;
+        let fy = m.matchY + (m.matchH - fh) / 2;
+
+        if (tpl.placement === 'right') {
+          fx = m.matchX + m.matchW + 8;
+          fy = m.matchY + (m.matchH - fh) / 2;
+          if (fx + fw > pageW - 6) {
+            if (m.matchX - fw - 8 >= 6) {
+              fx = m.matchX - fw - 8;
+            } else {
+              fx = Math.max(6, pageW - fw - 6);
+            }
+          }
+        } else if (tpl.placement === 'left') {
+          fx = m.matchX - fw - 8;
+          fy = m.matchY + (m.matchH - fh) / 2;
+          if (fx < 6) {
+            if (m.matchX + m.matchW + 8 + fw <= pageW - 6) {
+              fx = m.matchX + m.matchW + 8;
+            } else {
+              fx = 6;
+            }
+          }
+        } else if (tpl.placement === 'bottom') {
+          fx = Math.max(6, Math.min(pageW - fw - 6, m.matchX + (m.matchW - fw) / 2));
+          fy = Math.min(pageH - fh - 6, m.matchY + m.matchH + 6);
+        } else if (tpl.placement === 'top') {
+          fx = Math.max(6, Math.min(pageW - fw - 6, m.matchX + (m.matchW - fw) / 2));
+          fy = Math.max(6, m.matchY - fh - 6);
+        } else if (tpl.placement === 'overlap') {
+          fx = Math.max(6, Math.min(pageW - fw - 6, m.matchX + (m.matchW - fw) / 2));
+          fy = Math.max(6, Math.min(pageH - fh - 6, m.matchY + (m.matchH - fh) / 2));
+        }
+
+        fx = Math.round(Math.max(4, Math.min(pageW - fw - 4, fx)));
+        fy = Math.round(Math.max(4, Math.min(pageH - fh - 4, fy)));
+
+        // Tránh tạo trùng lặp nếu đã có trường chữ ký tại cùng vị trí này
+        const isDuplicatePos = existingAndNewFields.some(
+          ef =>
+            ef.pageIndex === m.pageIndex &&
+            Math.abs(ef.x - fx) < 16 &&
+            Math.abs(ef.y - fy) < 16
+        );
+        if (isDuplicatePos) continue;
+
+        const baseName = (tpl.fieldName || tpl.keyword || 'Signature').trim();
+        let finalName = baseName;
+        let suffix = 2;
+        while (existingAndNewFields.some(ef => ef.name === finalName)) {
+          finalName = `${baseName}_${suffix}`;
+          suffix++;
+        }
+
+        const createdField: Field = {
+          id: Math.random().toString(36).substring(2, 9),
+          pageIndex: m.pageIndex,
+          x: fx,
+          y: fy,
+          width: fw,
+          height: fh,
+          type: 'signature',
+          name: finalName,
+          originalName: finalName,
+        };
+        newFieldsToCreate.push(createdField);
+        existingAndNewFields.push(createdField);
+      }
+    }
+
+    if (newFieldsToCreate.length > 0) {
+      setFields(prev => [...prev, ...newFieldsToCreate]);
+      const firstCreated = newFieldsToCreate[0];
+      setSelectedFieldId(firstCreated.id);
+      if (firstCreated.pageIndex + 1 !== currentPage) {
+        handleScrollToPage(firstCreated.pageIndex);
+      }
+      triggerSaveToast(
+        `Đã đặt ${newFieldsToCreate.length} trường ký tại ${targetPageLabel}!`,
+        `Nhận diện đúng tên ${matchedTemplateCount} mẫu trên ${targetPageLabel}.`
+      );
+    } else {
+      if (specificTemplates && specificTemplates.length === 1) {
+        setActiveSigTemplateId(specificTemplates[0].id);
+        setActiveTool('Signature Field');
+        triggerSaveToast(
+          `Không thấy chữ "${specificTemplates[0].keyword}" ở ${targetPageLabel}`,
+          `Hãy chọn đúng trang có tên "${specificTemplates[0].keyword}" hoặc kéo chuột đặt trực tiếp.`
+        );
+      } else {
+        alert(
+          `Không tìm thấy tên trong mẫu (${listToUse.map(t => `"${t.keyword}"`).join(', ')}) tại ${targetPageLabel}.\n\nHãy chuyển tới hoặc chọn đúng trang chứa phần chữ ký/nơi nhận rồi bấm quét lại.`
+        );
+      }
+    }
+  };
 
   // Styling & Nudging States for PDF text edits
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
@@ -4528,11 +4888,22 @@ export default function App() {
     if (width > 5 && height > 5) {
       const newId = Math.random().toString(36).substring(2, 9);
       if (activeTool === 'Signature Field') {
-        const defaultName = `Signature${fields.filter(f => f.type === 'signature').length + 1}`;
+        const activeTpl = signatureTemplates.find(t => t.id === activeSigTemplateId);
+        const baseName = activeTpl
+          ? activeTpl.fieldName
+          : `Signature${fields.filter(f => f.type === 'signature').length + 1}`;
+        let defaultName = baseName;
+        let suffix = 2;
+        while (fields.some(f => f.name === defaultName)) {
+          defaultName = `${baseName}_${suffix}`;
+          suffix++;
+        }
+        const finalW = (width === 120 && height === 50 && activeTpl) ? activeTpl.width : width;
+        const finalH = (width === 120 && height === 50 && activeTpl) ? activeTpl.height : height;
         setFields([...fields, {
           id: newId,
           pageIndex: drawing.pageIndex,
-          x, y, width, height,
+          x, y, width: finalW, height: finalH,
           type: 'signature',
           name: defaultName,
           originalName: defaultName,
@@ -7050,6 +7421,287 @@ export default function App() {
         </div>
       )}
 
+      {/* Modal Quản lý Mẫu Trường Chữ Ký Theo Tên */}
+      {showSigTemplateModal && (
+        <div
+          className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-fade-in"
+          onMouseDown={() => setShowSigTemplateModal(false)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl border border-indigo-100 max-w-2xl w-full overflow-hidden flex flex-col max-h-[88vh]"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="bg-gradient-to-r from-indigo-700 via-purple-700 to-indigo-800 px-6 py-4 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <PenSquare className="w-5 h-5 text-indigo-200" />
+                <div>
+                  <h3 className="font-bold text-sm">Mẫu Trường Chữ Ký Tự Động Theo Tên</h3>
+                  <p className="text-[11px] text-indigo-200">
+                    Lưu sẵn các tên/chức danh thường dùng — tự động tìm chữ trong PDF và điền trường ký bên cạnh
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSigTemplateModal(false)}
+                className="text-indigo-200 hover:text-white p-1 rounded-lg hover:bg-white/10 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-5 overflow-y-auto flex flex-col gap-4 text-xs text-gray-700">
+              {/* Form tạo mẫu mới */}
+              <div className="bg-indigo-50/70 border border-indigo-200 rounded-xl p-3.5 flex flex-col gap-3">
+                <div className="font-bold text-indigo-950 flex items-center gap-1.5 text-xs">
+                  <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Thêm mẫu trường chữ ký mới</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-semibold text-gray-700">
+                      Tên / Từ khóa cần tìm trong PDF <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={tplKeywordInput}
+                      onChange={(e) => setTplKeywordInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddSignatureTemplate();
+                        }
+                      }}
+                      placeholder="VD: Tuấn Anh, Nguyễn Văn A, GIÁM ĐỐC..."
+                      className="px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-semibold text-gray-700">
+                      Tên trường ký hiển thị (Để trống = giống tên tìm)
+                    </label>
+                    <input
+                      type="text"
+                      value={tplFieldNameInput}
+                      onChange={(e) => setTplFieldNameInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddSignatureTemplate();
+                        }
+                      }}
+                      placeholder="VD: Tuấn Anh, Ký nháy KHVT, Signature1..."
+                      className="px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-end justify-between gap-2.5">
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[11px] font-semibold text-gray-700">Vị trí đặt ô ký so với tên</label>
+                      <select
+                        value={tplPlacementInput}
+                        onChange={(e) => setTplPlacementInput(e.target.value as any)}
+                        className="px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-semibold outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                      >
+                        <option value="right">Bên cạnh (Bên phải chữ)</option>
+                        <option value="left">Bên cạnh (Bên trái chữ)</option>
+                        <option value="bottom">Phía dưới chữ (Ký dưới chức danh)</option>
+                        <option value="top">Phía trên chữ</option>
+                        <option value="overlap">Đè lên vị trí chữ</option>
+                      </select>
+                    </div>
+
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[11px] font-semibold text-gray-700">Rộng (px)</label>
+                      <input
+                        type="number"
+                        min={40}
+                        max={400}
+                        value={tplWidthInput}
+                        onChange={(e) => setTplWidthInput(Number(e.target.value) || 110)}
+                        className="w-18 px-2 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-bold text-center outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[11px] font-semibold text-gray-700">Cao (px)</label>
+                      <input
+                        type="number"
+                        min={24}
+                        max={250}
+                        value={tplHeightInput}
+                        onChange={(e) => setTplHeightInput(Number(e.target.value) || 45)}
+                        className="w-18 px-2 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-bold text-center outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleAddSignatureTemplate()}
+                    className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg shadow-sm transition-colors cursor-pointer flex items-center gap-1.5 h-[32px]"
+                  >
+                    <span>+ Lưu mẫu tên</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Danh sách mẫu đã lưu */}
+              <div className="flex flex-col gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-bold text-gray-800 text-xs">
+                    Danh sách mẫu đã lưu ({signatureTemplates.length})
+                  </span>
+                  {signatureTemplates.length > 0 && pages.length > 0 && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] font-semibold text-gray-600">Trang quét:</span>
+                      <select
+                        value={sigScanPageOption}
+                        onChange={(e) => setSigScanPageOption(e.target.value)}
+                        className="px-2 py-1 bg-white border border-indigo-300 rounded-lg text-xs font-bold text-indigo-900 outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                      >
+                        <option value="current">
+                          {selectedPageIndices.length > 0
+                            ? `Trang đã tích (${selectedPageIndices.map(i => i + 1).join(', ')})`
+                            : `Trang đang xem (Trang ${currentPage})`}
+                        </option>
+                        {pages.length > 1 && (
+                          <option value="last">Trang cuối (Trang {pages.length})</option>
+                        )}
+                        {pages.map((_, idx) => (
+                          <option key={`modal-scan-p-${idx}`} value={`page-${idx}`}>
+                            Chỉ Trang {idx + 1}
+                          </option>
+                        ))}
+                        {pages.length > 1 && (
+                          <option value="all">Tất cả trang (1 - {pages.length})</option>
+                        )}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleAutoCreateSignatureFields();
+                          setShowSigTemplateModal(false);
+                        }}
+                        className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs shadow-xs cursor-pointer flex items-center gap-1"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Quét trang đã chọn & Đặt ký</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {signatureTemplates.length === 0 ? (
+                  <div className="text-center py-8 bg-gray-50 border border-dashed border-gray-300 rounded-xl text-gray-500">
+                    Chưa có mẫu trường chữ ký nào được lưu. Hãy nhập tên ở khung phía trên và bấm <b>"+ Lưu mẫu tên"</b>.
+                  </div>
+                ) : (
+                  <div className="border border-gray-200 rounded-xl overflow-hidden divide-y divide-gray-100">
+                    {signatureTemplates.map((tpl) => (
+                      <div key={tpl.id} className="p-2.5 bg-white hover:bg-indigo-50/40 flex flex-wrap items-center justify-between gap-2 transition-colors">
+                        <div className="flex flex-wrap items-center gap-2 flex-1">
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] text-gray-500 font-semibold">Tìm chữ:</span>
+                            <input
+                              type="text"
+                              value={tpl.keyword}
+                              onChange={(e) => handleUpdateSignatureTemplate(tpl.id, { keyword: e.target.value })}
+                              className="px-2 py-1 border border-gray-300 rounded text-xs font-bold text-indigo-900 bg-white w-36 outline-none focus:ring-1 focus:ring-indigo-500"
+                            />
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] text-gray-500 font-semibold">Tên ô ký:</span>
+                            <input
+                              type="text"
+                              value={tpl.fieldName}
+                              onChange={(e) => handleUpdateSignatureTemplate(tpl.id, { fieldName: e.target.value })}
+                              className="px-2 py-1 border border-gray-300 rounded text-xs font-semibold text-gray-800 bg-white w-32 outline-none focus:ring-1 focus:ring-indigo-500"
+                            />
+                          </div>
+                          <select
+                            value={tpl.placement}
+                            onChange={(e) => handleUpdateSignatureTemplate(tpl.id, { placement: e.target.value as any })}
+                            className="px-2 py-1 border border-gray-300 rounded text-[11px] font-semibold bg-white cursor-pointer outline-none focus:ring-1 focus:ring-indigo-500"
+                          >
+                            <option value="right">Bên phải chữ</option>
+                            <option value="left">Bên trái chữ</option>
+                            <option value="bottom">Phía dưới chữ</option>
+                            <option value="top">Phía trên chữ</option>
+                            <option value="overlap">Đè lên chữ</option>
+                          </select>
+                          <div className="flex items-center gap-1 text-[11px] text-gray-600">
+                            <input
+                              type="number"
+                              min={40}
+                              max={400}
+                              value={tpl.width}
+                              onChange={(e) => handleUpdateSignatureTemplate(tpl.id, { width: Number(e.target.value) || 110 })}
+                              className="w-13 px-1 py-1 border border-gray-300 rounded text-center font-semibold bg-white"
+                              title="Chiều rộng"
+                            />
+                            <span>×</span>
+                            <input
+                              type="number"
+                              min={24}
+                              max={250}
+                              value={tpl.height}
+                              onChange={(e) => handleUpdateSignatureTemplate(tpl.id, { height: Number(e.target.value) || 45 })}
+                              className="w-13 px-1 py-1 border border-gray-300 rounded text-center font-semibold bg-white"
+                              title="Chiều cao"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleAutoCreateSignatureFields([tpl]);
+                              setShowSigTemplateModal(false);
+                            }}
+                            className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-md font-bold text-[11px] cursor-pointer transition-colors"
+                            title="Tìm tên này trong PDF và đặt trường ký ngay bên cạnh"
+                          >
+                            Điền vào PDF
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteSignatureTemplate(tpl.id)}
+                            className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded cursor-pointer transition-colors"
+                            title="Xóa mẫu này"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-3.5 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
+              <span className="text-[11px] text-gray-500">
+                Mẫu được lưu tự động trên trình duyệt máy tính của bạn.
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowSigTemplateModal(false)}
+                className="px-4 py-1.5 bg-gray-800 hover:bg-gray-900 text-white font-semibold rounded-lg text-xs cursor-pointer"
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Top Header / Title Bar */}
       <div className="bg-gradient-to-r from-indigo-700 via-purple-700 to-indigo-800 text-white shadow-md px-4 py-2.5 flex justify-between items-center z-10 relative">
         <div className="flex items-center gap-2.5 flex-wrap">
@@ -7154,13 +7806,29 @@ export default function App() {
               label={"Trường\nchữ ký"} 
               active={activeTool === 'Signature Field'} 
               disabled={isDigitallySigned}
-              title={isDigitallySigned ? "Không thể thêm trường ký vì tài liệu đã được ký số" : "Thêm ô ký số"}
+              title={isDigitallySigned ? "Không thể thêm trường ký vì tài liệu đã được ký số" : "Thêm ô ký số & Quản lý mẫu trường ký theo tên"}
               onClick={() => {
                 if (isDigitallySigned) {
                   alert("Tài liệu hiện tại đã được ký số. Không thể thêm trường ký mới.");
                   return;
                 }
                 setActiveTool('Signature Field');
+              }}
+           />
+           <RibbonButton 
+              icon={Sparkles} 
+              label={"Tạo ký\ntheo mẫu"} 
+              active={showSigTemplateModal} 
+              disabled={isDigitallySigned}
+              title="Tự động nhận diện tên trong PDF và điền trường chữ ký bên cạnh theo mẫu đã lưu"
+              onClick={() => {
+                if (isDigitallySigned) return;
+                if (signatureTemplates.length === 0) {
+                  setActiveTool('Signature Field');
+                  setShowSigTemplateModal(true);
+                  return;
+                }
+                handleAutoCreateSignatureFields();
               }}
            />
            <RibbonButton 
@@ -7291,6 +7959,215 @@ export default function App() {
            />
            <div className="absolute -bottom-2 inset-x-0 text-center text-[9px] text-gray-500 uppercase tracking-wider pointer-events-none">Lịch sử</div>
         </div>
+
+        {(activeTool === 'Signature Field' || selectedFieldId !== null) && (() => {
+          const selectedSigField = fields.find(f => f.id === selectedFieldId);
+          return (
+            <>
+              <div className="w-px h-15 bg-gray-300 self-center hidden xl:block"></div>
+
+              <div className="flex flex-wrap items-center gap-2 bg-white/95 border border-indigo-200 rounded-xl px-2.5 py-1.5 min-h-[64px] shadow-xs relative">
+                {/* Chọn trang quét & Nút 1 chạm: Quét trang đã chọn và đặt trường ký đúng tên */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-1">
+                    <div className="flex items-center bg-indigo-50 border border-indigo-200 rounded-lg px-1.5 py-0.5 gap-1">
+                      <span className="text-[10px] font-bold text-indigo-800 whitespace-nowrap">Quét tại:</span>
+                      <select
+                        value={sigScanPageOption}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setSigScanPageOption(val);
+                          if (val.startsWith('page-')) {
+                            const pIdx = parseInt(val.replace('page-', ''), 10);
+                            if (!isNaN(pIdx)) handleScrollToPage(pIdx);
+                          } else if (val === 'last' && pages.length > 0) {
+                            handleScrollToPage(pages.length - 1);
+                          }
+                        }}
+                        className="text-[11px] font-bold text-indigo-950 bg-transparent outline-none cursor-pointer py-0.5"
+                        title="Chọn trang cần quét tìm tên để đặt trường chữ ký (không cần quét toàn bộ file)"
+                      >
+                        <option value="current">
+                          {selectedPageIndices.length > 0
+                            ? `Trang đã tích (${selectedPageIndices.map(i => i + 1).join(', ')})`
+                            : `Trang đang chọn (Trang ${currentPage})`}
+                        </option>
+                        {pages.length > 1 && (
+                          <option value="last">Trang cuối (Trang {pages.length})</option>
+                        )}
+                        {pages.map((_, idx) => (
+                          <option key={`rib-scan-p-${idx}`} value={`page-${idx}`}>
+                            Trang {idx + 1}
+                          </option>
+                        ))}
+                        {pages.length > 1 && (
+                          <option value="all">Tất cả trang (1-{pages.length})</option>
+                        )}
+                      </select>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleAutoCreateSignatureFields()}
+                      className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-xs shadow-xs transition-colors cursor-pointer flex items-center gap-1"
+                      title="Chỉ quét trang đã chọn, nhận diện tên và đặt trường chữ ký vào đúng tên"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                      <span>Quét & Đặt ký ({signatureTemplates.length})</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowSigTemplateModal(true)}
+                      className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 font-semibold rounded-lg text-xs transition-colors cursor-pointer"
+                      title="Mở bảng quản lý, chỉnh sửa hoặc thêm các mẫu tên trường chữ ký"
+                    >
+                      Mẫu tên
+                    </button>
+                  </div>
+
+                  {/* Tạo nhanh mẫu ngay trên thanh công cụ */}
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="text"
+                      value={tplKeywordInput}
+                      onChange={(e) => setTplKeywordInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddSignatureTemplate();
+                        }
+                      }}
+                      placeholder="Nhập tên cần nhận diện (VD: Tuấn Anh)..."
+                      className="w-42 px-2 py-0.5 text-[11px] bg-white border border-gray-300 rounded outline-none focus:ring-1 focus:ring-indigo-500 font-medium"
+                    />
+                    <select
+                      value={tplPlacementInput}
+                      onChange={(e) => setTplPlacementInput(e.target.value as any)}
+                      className="px-1.5 py-0.5 text-[11px] bg-white border border-gray-300 rounded font-semibold text-gray-700 outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                      title="Vị trí điền trường ký so với chữ nhận diện"
+                    >
+                      <option value="right">Bên phải</option>
+                      <option value="left">Bên trái</option>
+                      <option value="bottom">Phía dưới</option>
+                      <option value="top">Phía trên</option>
+                      <option value="overlap">Đè lên</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => handleAddSignatureTemplate()}
+                      className="px-2 py-0.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold rounded cursor-pointer transition-colors whitespace-nowrap"
+                      title="Lưu tên này vào danh sách mẫu"
+                    >
+                      + Lưu mẫu
+                    </button>
+                  </div>
+                </div>
+
+                {/* Danh sách các mẫu đã lưu (bấm vào mẫu nào để điền ngay mẫu đó) */}
+                {signatureTemplates.length > 0 && (
+                  <>
+                    <div className="w-px h-10 bg-indigo-200/80"></div>
+                    <div className="flex flex-col gap-1 max-w-[320px]">
+                      <span className="text-[9px] font-bold text-indigo-950 uppercase tracking-wider">
+                        Mẫu tên đã lưu (Bấm để tự tìm & điền):
+                      </span>
+                      <div className="flex items-center gap-1 overflow-x-auto pb-0.5">
+                        {signatureTemplates.map((tpl) => {
+                          const posLabel =
+                            tpl.placement === 'right'
+                              ? 'Phải'
+                              : tpl.placement === 'left'
+                              ? 'Trái'
+                              : tpl.placement === 'bottom'
+                              ? 'Dưới'
+                              : tpl.placement === 'top'
+                              ? 'Trên'
+                              : 'Đè';
+                          const isTplActive = activeSigTemplateId === tpl.id;
+                          return (
+                            <div
+                              key={tpl.id}
+                              className={`inline-flex items-center rounded-md border text-[11px] shrink-0 transition-colors ${
+                                isTplActive
+                                  ? 'bg-indigo-600 text-white border-indigo-700'
+                                  : 'bg-indigo-50/80 hover:bg-indigo-100 text-indigo-900 border-indigo-200'
+                              }`}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => handleAutoCreateSignatureFields([tpl])}
+                                className="px-2 py-0.5 font-semibold cursor-pointer flex items-center gap-1"
+                                title={`Tự tìm "${tpl.keyword}" trong PDF và đặt trường "${tpl.fieldName}" ở bên ${posLabel.toLowerCase()}`}
+                              >
+                                <span>{tpl.keyword}</span>
+                                <span className={`text-[9px] px-1 rounded ${isTplActive ? 'bg-indigo-800 text-indigo-100' : 'bg-white text-indigo-600'}`}>
+                                  {posLabel}
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteSignatureTemplate(tpl.id)}
+                                className={`px-1 py-0.5 hover:text-red-500 cursor-pointer border-l ${
+                                  isTplActive ? 'border-indigo-500 text-indigo-200' : 'border-indigo-200 text-gray-400'
+                                }`}
+                                title="Xóa mẫu này"
+                              >
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {/* Chỉnh nhanh trường chữ ký đang chọn trên trang hoặc lưu thành mẫu */}
+                {selectedSigField && (
+                  <>
+                    <div className="w-px h-10 bg-indigo-200/80"></div>
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[9px] font-bold text-indigo-950 uppercase tracking-wider">
+                        Trường đang chọn:
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="text"
+                          value={selectedSigField.name}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setFields(prev => prev.map(f => f.id === selectedSigField.id ? { ...f, name: val } : f));
+                          }}
+                          className="w-28 px-2 py-0.5 text-xs font-bold text-indigo-900 bg-white border border-indigo-300 rounded outline-none focus:ring-1 focus:ring-indigo-500"
+                          title="Tên trường chữ ký"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleAddSignatureTemplate(
+                              selectedSigField.name,
+                              selectedSigField.name,
+                              Math.round(selectedSigField.width),
+                              Math.round(selectedSigField.height)
+                            )
+                          }
+                          className="px-2 py-0.5 bg-indigo-100 hover:bg-indigo-200 text-indigo-800 border border-indigo-300 rounded text-[11px] font-semibold cursor-pointer whitespace-nowrap"
+                          title="Lưu tên và kích thước của trường ký đang chọn vào danh sách mẫu"
+                        >
+                          Lưu ô này làm mẫu
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                <div className="absolute -bottom-1 -mx-2 w-[calc(100%+16px)] text-center text-[10px] text-indigo-800/60 uppercase tracking-wider font-semibold pointer-events-none">
+                  Mẫu trường chữ ký tự động
+                </div>
+              </div>
+            </>
+          );
+        })()}
         
         {activeTool === 'Edit Text' && (() => {
            const currentSelectedText = pdfTexts.find(t => t.id === selectedTextId);
@@ -8953,6 +9830,17 @@ export default function App() {
 
               <div className="h-5 w-px bg-gray-200" />
 
+              <button
+                 type="button"
+                 onClick={() => handleAutoCreateSignatureFields(undefined, 'selected')}
+                 disabled={isDigitallySigned}
+                 className="flex items-center gap-1 text-xs text-indigo-700 hover:text-indigo-800 font-bold bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
+                 title="Quét riêng các trang đang tích chọn và đặt trường chữ ký vào đúng tên theo mẫu"
+              >
+                 <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                 <span>Quét & Đặt ký mẫu</span>
+              </button>
+
               <button 
                  onClick={() => handleDeleteMultiplePages(selectedPageIndices)}
                  disabled={isDigitallySigned}
@@ -9478,16 +10366,18 @@ export default function App() {
          const activeColorClass = isText ? 'bg-blue-600' : 'bg-indigo-600';
          const focusRingClass = isText ? 'focus:border-blue-500 focus:ring-blue-500' : 'focus:border-indigo-500 focus:ring-indigo-500';
 
+         const canMoveOrResizeField = activeTool === 'Select' || activeTool === 'Signature Field';
+
          return (
          <div 
            key={f.id}
-           className={`absolute group ${borderClass} ${bgClass} ${activeTool === 'Select' ? 'cursor-move' : 'cursor-pointer'} rounded transition-all duration-150`}
+           className={`absolute group ${borderClass} ${bgClass} ${canMoveOrResizeField ? 'cursor-move' : 'cursor-pointer'} rounded transition-all duration-150`}
            style={{ left: f.x, top: f.y, width: f.width, height: f.height }}
            onMouseDown={(e) => {
               if (isDigitallySigned) return;
               e.stopPropagation();
               setSelectedFieldId(f.id);
-              if (activeTool === 'Select') {
+              if (canMoveOrResizeField) {
                 const pageElement = (e.currentTarget as HTMLElement).closest('[id^="page-"]') as HTMLDivElement;
                 if (pageElement) {
                     const rect = pageElement.getBoundingClientRect();
@@ -9555,7 +10445,7 @@ export default function App() {
              </div>
              
              {/* Corner Handles for resizing */}
-             {isSelected && activeTool === 'Select' && !isDigitallySigned && (
+             {isSelected && canMoveOrResizeField && !isDigitallySigned && (
                  <>
                      <div onMouseDown={(e) => handleResizeDown(e, f, 'nw')} className={`absolute top-0 left-0 w-1.5 h-1.5 ${activeColorClass} transform -translate-x-1/2 -translate-y-1/2 cursor-nwse-resize border border-white rounded-full z-10`}></div>
                      <div onMouseDown={(e) => handleResizeDown(e, f, 'n')} className={`absolute top-0 left-1/2 w-1.5 h-1.5 ${activeColorClass} transform -translate-x-1/2 -translate-y-1/2 cursor-ns-resize border border-white rounded-full z-10`}></div>
